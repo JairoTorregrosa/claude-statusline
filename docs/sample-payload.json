@@ -1,0 +1,35 @@
+{
+  "session_id": "00000000-0000-0000-0000-000000000000",
+  "cwd": "/tmp",
+  "session_name": "sample session",
+  "model": { "id": "claude-fable-5", "display_name": "Fable 5" },
+  "workspace": { "current_dir": "/tmp", "project_dir": "/tmp", "added_dirs": [] },
+  "cost": {
+    "total_cost_usd": 3.72,
+    "total_duration_ms": 842605,
+    "total_api_duration_ms": 547863,
+    "total_lines_added": 128,
+    "total_lines_removed": 31
+  },
+  "context_window": {
+    "total_input_tokens": 123176,
+    "total_output_tokens": 492,
+    "context_window_size": 1000000,
+    "current_usage": {
+      "input_tokens": 2,
+      "output_tokens": 492,
+      "cache_creation_input_tokens": 9098,
+      "cache_read_input_tokens": 114076
+    },
+    "used_percentage": 12,
+    "remaining_percentage": 88
+  },
+  "exceeds_200k_tokens": false,
+  "fast_mode": false,
+  "thinking": { "enabled": true },
+  "effort": { "level": "xhigh" },
+  "rate_limits": {
+    "five_hour": { "used_percentage": 43, "resets_at": 1786155000 },
+    "seven_day": { "used_percentage": 8, "resets_at": 1786734000 }
+  }
+}

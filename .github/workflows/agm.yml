@@ -1,0 +1,21 @@
+name: AGM
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Governance gate
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: python3 .github/scripts/agm_gate.py

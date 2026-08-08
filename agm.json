@@ -1,0 +1,96 @@
+{
+  "agm_version": "0.1",
+  "project": "claude-statusline",
+  "principle": "Absence must be declared, not silent.",
+  "zone_rule": "For each changed file, take the highest-severity zone whose pattern matches it. The change's zone is the highest across all changed files. Patterns use fnmatch semantics; `*` also matches `/`.",
+  "risk_zones": [
+    {
+      "level": "critical",
+      "paths": [
+        "install.sh",
+        ".github/*",
+        "AGENTS.md",
+        "GOVERNANCE.md",
+        "agm.json"
+      ],
+      "why": "These files write to user machines, publish binaries, instruct agents, or change the rules of review itself."
+    },
+    {
+      "level": "high",
+      "paths": [
+        "src/main.rs",
+        "src/git.rs",
+        "src/cache.rs",
+        "src/sessions.rs",
+        "src/settings.rs",
+        "Cargo.toml",
+        "Cargo.lock"
+      ],
+      "why": "Process spawns, filesystem access, cross-session cache state, dependency supply chain, and the loud-degradation semantics of settings."
+    },
+    {
+      "level": "medium",
+      "paths": ["src/*"],
+      "why": "Correctness of displayed numbers. The product is a truthful statusline; a wrong number is worse than no number."
+    },
+    {
+      "level": "low",
+      "paths": ["*"],
+      "why": "Documentation and assets."
+    }
+  ],
+  "evidence": {
+    "low": [],
+    "medium": ["summary", "checks", "behavior"],
+    "high": ["summary", "checks", "behavior", "assumptions", "risk"],
+    "critical": [
+      "summary",
+      "checks",
+      "behavior",
+      "assumptions",
+      "risk",
+      "second_review",
+      "confirmation"
+    ]
+  },
+  "sections": {
+    "summary": {
+      "heading": "## Summary",
+      "means": "What changes and why, in the contributor's words."
+    },
+    "checks": {
+      "heading": "## Checks",
+      "means": "A statement that `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` pass locally."
+    },
+    "behavior": {
+      "heading": "## Behavior evidence",
+      "means": "Proof the change does what it claims: a before/after render sample, a new test, or equivalent."
+    },
+    "assumptions": {
+      "heading": "## External assumptions",
+      "means": "Every belief about data this project does not control (payload shape, transcript schema, settings keys, git output) and how each was verified against real data. An unverified assumption is missing evidence — declare it here instead of hiding it."
+    },
+    "risk": {
+      "heading": "## Risk",
+      "means": "What breaks if this change is wrong, and the rollback."
+    },
+    "second_review": {
+      "heading": "## Second review",
+      "means": "An adversarial pass by a second agent or human, with its findings and their resolution."
+    },
+    "confirmation": {
+      "checkbox": "- [x] I am a human. I read the diff and the evidence above, and I take responsibility for this change.",
+      "means": "Set by the human contributor only. An agent must never check this box."
+    }
+  },
+  "gates": {
+    "zone_declared": "The PR body names the risk zone and it matches the zone computed from the changed files.",
+    "evidence_complete": "Every section this zone requires is present in the PR body.",
+    "human_confirmed": "The confirmation box is checked. Required for high and critical zones.",
+    "maintainer_review": "GitHub review approval. This gate belongs to the maintainer alone; no tool and no contributor statement can set it."
+  },
+  "provenance": {
+    "disclosure": "When an agent produced any part of the change, name the tool and model in the PR body.",
+    "commit_trailer": "Keep the agent's Co-Authored-By trailer on commits."
+  }
+}
