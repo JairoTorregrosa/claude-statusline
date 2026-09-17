@@ -18,6 +18,10 @@ project safely. If you are a human, read [README.md](README.md).
 
 1. `cargo build --release`
 2. `install -d ~/.local/bin && install -m 755 target/release/claude-statusline ~/.local/bin/claude-statusline`
+
+   On Windows the binary is `target\release\claude-statusline.exe`. Copy it to
+   `%USERPROFILE%\.local\bin\claude-statusline.exe`, or run `install.ps1`,
+   which performs every step in this section.
 3. Read `~/.claude/settings.json`. Record the current `statusLine` value.
    You will report it to the user as rollback information.
 4. Set only this key. Preserve every other key in the file:
@@ -33,6 +37,33 @@ project safely. If you are a human, read [README.md](README.md).
 
 Use the absolute home path. Do not write `~` inside the JSON value.
 
+On Windows, write the path with forward slashes
+(`C:/Users/you/.local/bin/claude-statusline.exe`). Claude Code hands the
+value to Git Bash when Git for Windows is installed and to PowerShell
+otherwise; a backslash is an escape character in Git Bash.
+
+If the path contains a space or any character outside `[A-Za-z0-9_./:-]`, it
+must be quoted, and the two shells disagree on how. Determine which shell
+applies — Git for Windows present means Git Bash — and write:
+
+- Git Bash: `'C:/Users/Jane Doe/.local/bin/claude-statusline.exe'`, with a
+  quote inside the name written as `'\''`.
+- PowerShell: `& 'C:/Users/Jane Doe/.local/bin/claude-statusline.exe'`, with a
+  quote inside the name written as `''`.
+
+An unquoted path with a space fails silently in both shells. `install.ps1`
+performs this detection; prefer running it.
+
+Two Windows-specific hazards apply when a tool other than `install.ps1`
+rewrites the file:
+
+- `ConvertTo-Json` defaults to `-Depth 2` and silently replaces deeper
+  structures with a placeholder string. `settings.json` nests further than
+  that. Pass `-Depth 100`.
+- Windows PowerShell 5.1 writes UTF-8 with a BOM through `Set-Content` and
+  `Out-File`. A BOM makes strict JSON parsers reject the file. Write the
+  bytes with a BOM-less encoder.
+
 ### Postconditions — verify before you report success
 
 1. `echo '{}' | ~/.local/bin/claude-statusline` exits 0 and prints `ctx:--`.
@@ -40,6 +71,9 @@ Use the absolute home path. Do not write `~` inside the JSON value.
    lines. Line 2 contains `Fable 5` and `ctx:`.
 3. `python3 -c "import json; json.load(open('$HOME/.claude/settings.json'))"`
    exits 0.
+
+On Windows, use `claude-statusline.exe` in the paths above and `python`
+instead of `python3`. The expected output is identical on all platforms.
 
 ### Report to the user
 

@@ -30,7 +30,7 @@ its changed files.
 
 | Zone | Files | Why |
 |---|---|---|
-| critical | `install.sh`, `.github/*`, `AGENTS.md`, `GOVERNANCE.md`, `agm.json` | Writes to user machines, publishes binaries, instructs agents, or changes the rules of review itself. |
+| critical | `install.sh`, `install.ps1`, `.github/*`, `AGENTS.md`, `GOVERNANCE.md`, `agm.json` | Writes to user machines, publishes binaries, instructs agents, or changes the rules of review itself. |
 | high | `main.rs`, `git.rs`, `cache.rs`, `sessions.rs`, `settings.rs`, `Cargo.toml`, `Cargo.lock` | Process spawns, filesystem access, cross-session state, dependency supply chain, loud-degradation semantics. |
 | medium | the rest of `src/` | Correctness of displayed numbers. A wrong number is worse than no number. |
 | low | documentation, assets | No runtime effect. |

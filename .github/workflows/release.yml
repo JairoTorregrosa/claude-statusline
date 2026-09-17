@@ -20,6 +20,8 @@ jobs:
             os: macos-latest
           - target: aarch64-apple-darwin
             os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -32,13 +34,24 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
       - name: Package
+        if: runner.os != 'Windows'
         run: |
           NAME="claude-statusline-${GITHUB_REF_NAME}-${{ matrix.target }}"
           tar -czf "$NAME.tar.gz" -C "target/${{ matrix.target }}/release" claude-statusline
+      # Windows ships a .zip: the binary carries an .exe suffix, and .zip is
+      # the archive Windows extracts without extra tooling.
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $name = "claude-statusline-$env:GITHUB_REF_NAME-${{ matrix.target }}"
+          Compress-Archive -LiteralPath "target/${{ matrix.target }}/release/claude-statusline.exe" -DestinationPath "$name.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: claude-statusline-*.tar.gz
+          path: |
+            claude-statusline-*.tar.gz
+            claude-statusline-*.zip
 
   release:
     needs: build
@@ -47,8 +60,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
+      # Glob every downloaded artifact, not one archive format: a format the
+      # matrix adds later must not fall silently out of the checksums.
       - name: Checksums
-        run: sha256sum claude-statusline-*.tar.gz > SHA256SUMS
+        run: sha256sum claude-statusline-* > SHA256SUMS
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -57,4 +72,4 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
-            claude-statusline-*.tar.gz SHA256SUMS
+            claude-statusline-* SHA256SUMS

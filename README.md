@@ -104,7 +104,9 @@ later.
 
 1. Download the archive for your platform from the
    [releases page](https://github.com/JairoTorregrosa/claude-statusline/releases).
-2. Extract the binary to `~/.local/bin`.
+   macOS and Linux ship a `.tar.gz`; Windows ships a `.zip`.
+2. Extract the binary to `~/.local/bin`, or `%USERPROFILE%\.local\bin` on
+   Windows.
 3. Set `statusLine` in `~/.claude/settings.json`:
 
 ```json
@@ -116,6 +118,38 @@ later.
 }
 ```
 
+On Windows the value is the absolute path to `claude-statusline.exe`, written
+with forward slashes. Claude Code runs the command through Git Bash when Git
+for Windows is installed and through PowerShell otherwise; in Git Bash a
+backslash is an escape character, and forward slashes are accepted by both:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "C:/Users/you/.local/bin/claude-statusline.exe"
+  }
+}
+```
+
+If your user name contains a space or another character a shell interprets
+(`'`, `&`, `(`, `$`, …), the path must be quoted, and the two shells quote
+differently. `install.ps1` detects which one applies and writes the right
+form; when editing by hand, use single quotes — they are literal in both
+shells — and the shell's own escape for a quote inside the name:
+
+| Claude Code runs commands through | `command` value |
+|---|---|
+| Git Bash (Git for Windows installed) | `'C:/Users/Jane Doe/.local/bin/claude-statusline.exe'` |
+| PowerShell (no Git for Windows) | `& 'C:/Users/Jane Doe/.local/bin/claude-statusline.exe'` |
+
+Claude Code keeps its Windows settings under `%USERPROFILE%\.claude`, and
+`install.ps1` writes there. The binary, however, resolves its home directory
+from `HOME` first and `USERPROFILE` second, so if you set `HOME` to something
+other than your profile directory the binary reads `autoCompactWindow` and
+counts sessions from a `.claude` directory Claude Code never writes. Leave
+`HOME` unset, or set it to `%USERPROFILE%`.
+
 ### From source
 
 ```sh
@@ -124,9 +158,18 @@ cd claude-statusline
 ./install.sh
 ```
 
-The script builds the binary and installs it to `~/.local/bin`. The script
+On Windows, run the PowerShell installer instead:
+
+```powershell
+git clone https://github.com/JairoTorregrosa/claude-statusline
+cd claude-statusline
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+Either script builds the binary and installs it to `~/.local/bin`. The script
 writes a backup of `~/.claude/settings.json` and points `statusLine` at the
-binary. The script prints the previous value so you can roll back.
+binary. The script prints the previous value so you can roll back. Both
+scripts refuse to touch a `settings.json` that does not parse.
 
 ### With an agent
 
