@@ -240,7 +240,10 @@ fn ctx_part(p: &Payload, limit: CompactLimit) -> String {
             let remaining = 100_i64.saturating_sub(pct as i64);
             let body = format!("ctx:{}/{} ({pct}%)", fmt_tokens(used), fmt_tokens(d));
             if remaining <= 15 {
-                format!("{RED}{body}{RST} {RED}{BOLD}⚠compact{RST}")
+                // Space after the glyph: U+26A0 is neutral-width by the tables,
+                // but terminals such as Windows Terminal draw it two cells wide
+                // and advance one, so a label glued to it is overdrawn.
+                format!("{RED}{body}{RST} {RED}{BOLD}⚠ compact{RST}")
             } else if remaining <= 30 {
                 format!("{YELLOW}{body}{RST}")
             } else {
@@ -529,7 +532,7 @@ mod tests {
         };
         let out = render(&p, &ext);
         assert!(out.contains("120%"), "number must tell the truth:\n{out}");
-        assert!(out.contains("⚠compact"), "over-limit must warn:\n{out}");
+        assert!(out.contains("⚠ compact"), "over-limit must warn:\n{out}");
     }
 
     #[test]
@@ -571,7 +574,7 @@ mod tests {
             ..Default::default()
         };
         let out = render(&p, &ext);
-        assert!(out.contains("⚠compact"), "91% used must warn:\n{out}");
+        assert!(out.contains("⚠ compact"), "91% used must warn:\n{out}");
     }
 
     #[test]
