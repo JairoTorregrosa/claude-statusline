@@ -4,10 +4,16 @@
 //!
 //! Failure policy (deliberate): a *missing* file or key selects the
 //! documented default (200k) — that is real semantics, not a mask. A file
-//! that cannot be parsed, or a key that is present with a non-integer or
-//! zero value, is a broken config and must degrade LOUDLY: we return
+//! that cannot be parsed, or a key whose value is not one Claude Code
+//! itself accepts, is a broken config and must degrade LOUDLY: we return
 //! `Unavailable` and the renderer shows a visible `cfg!` marker. A
 //! denominator is never invented.
+//!
+//! Claude Code's `/autocompact` command persists the value as a *string* in
+//! the forms the command takes: a token count (`"200000"`), a `k`/`M`
+//! suffix (`"500k"`, `"1M"`), a bare number from 100 to 1000 meaning
+//! thousands (`"200"`), or `"auto"` for the model-tuned window. A JSON
+//! integer is accepted as a token count.
 
 const DEFAULT_COMPACT_WINDOW: u64 = 200_000;
 
@@ -37,15 +43,40 @@ fn parse_limit(raw: &str) -> CompactLimit {
     match serde_json::from_str::<serde_json::Value>(raw) {
         Ok(v) => match v.get("autoCompactWindow") {
             None => CompactLimit::Known(DEFAULT_COMPACT_WINDOW),
-            Some(x) => match x.as_u64() {
-                Some(n) if n > 0 => CompactLimit::Known(n),
-                // Present but wrong type, zero, negative, or fractional:
+            Some(x) => match parse_window(x) {
+                Some(n) => CompactLimit::Known(n),
+                // Present but unparseable, zero, negative, or fractional:
                 // broken config, not a value to default away.
-                _ => CompactLimit::Unavailable,
+                None => CompactLimit::Unavailable,
             },
         },
         Err(_) => CompactLimit::Unavailable,
     }
+}
+
+/// One `autoCompactWindow` value, in tokens. Accepts what Claude Code
+/// accepts (see the module docs); rejects everything else with `None`.
+fn parse_window(x: &serde_json::Value) -> Option<u64> {
+    if let Some(n) = x.as_u64() {
+        return (n > 0).then_some(n);
+    }
+    let s = x.as_str()?.trim();
+    if s.eq_ignore_ascii_case("auto") {
+        return Some(DEFAULT_COMPACT_WINDOW);
+    }
+    let (digits, unit) = match s.char_indices().next_back() {
+        Some((i, 'k' | 'K')) => (&s[..i], 1_000),
+        Some((i, 'm' | 'M')) => (&s[..i], 1_000_000),
+        _ => (s, 1),
+    };
+    let n: u64 = digits.parse().ok()?;
+    if n == 0 {
+        return None;
+    }
+    if unit == 1 && (100..=1000).contains(&n) {
+        return Some(n * 1_000);
+    }
+    n.checked_mul(unit)
 }
 
 #[cfg(test)]
@@ -69,10 +100,30 @@ mod tests {
     }
 
     #[test]
+    fn string_values_written_by_autocompact_are_accepted() {
+        for (raw, want) in [
+            (r#"{"autoCompactWindow": "350000"}"#, 350_000),
+            (r#"{"autoCompactWindow": "500k"}"#, 500_000),
+            (r#"{"autoCompactWindow": "500K"}"#, 500_000),
+            (r#"{"autoCompactWindow": "1M"}"#, 1_000_000),
+            (r#"{"autoCompactWindow": "200"}"#, 200_000),
+            (r#"{"autoCompactWindow": " 750k "}"#, 750_000),
+            (r#"{"autoCompactWindow": "auto"}"#, DEFAULT_COMPACT_WINDOW),
+        ] {
+            assert_eq!(parse_limit(raw), CompactLimit::Known(want), "raw: {raw}");
+        }
+    }
+
+    #[test]
     fn present_but_invalid_value_degrades_loudly() {
         for raw in [
-            r#"{"autoCompactWindow": "350000"}"#,
             r#"{"autoCompactWindow": null}"#,
+            r#"{"autoCompactWindow": ""}"#,
+            r#"{"autoCompactWindow": "0"}"#,
+            r#"{"autoCompactWindow": "abc"}"#,
+            r#"{"autoCompactWindow": "5x"}"#,
+            r#"{"autoCompactWindow": "k"}"#,
+            r#"{"autoCompactWindow": "-1"}"#,
             r#"{"autoCompactWindow": -1}"#,
             r#"{"autoCompactWindow": 350000.5}"#,
             r#"{"autoCompactWindow": 0}"#,
