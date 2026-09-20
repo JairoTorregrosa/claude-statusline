@@ -190,14 +190,19 @@ mod tests {
 
     #[test]
     fn null_fields_parse() {
-        // used_percentage / current_usage are documented as nullable.
+        // A null on a modelled key is None, through the typed path
+        // (session_name) and through lenient_u64 (the counts). current_usage
+        // is documented as nullable and is not modelled.
         let p: Payload = serde_json::from_str(
-            r#"{"context_window": {"used_percentage": null, "current_usage": null},
+            r#"{"context_window": {"total_input_tokens": null, "context_window_size": null,
+                                   "current_usage": null},
                 "session_name": null}"#,
         )
         .unwrap();
         assert!(p.session_name.is_none());
-        assert!(p.context_window.unwrap().total_input_tokens.is_none());
+        let cw = p.context_window.unwrap();
+        assert_eq!(cw.total_input_tokens, None);
+        assert_eq!(cw.context_window_size, None);
     }
 
     #[test]
