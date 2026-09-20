@@ -8,6 +8,7 @@
       "level": "critical",
       "paths": [
         "install.sh",
+        "install.ps1",
         ".github/*",
         "AGENTS.md",
         "GOVERNANCE.md",
