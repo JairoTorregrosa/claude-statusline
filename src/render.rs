@@ -32,17 +32,6 @@ pub struct External {
     pub active_sessions: Option<u64>,
 }
 
-impl Default for External {
-    fn default() -> Self {
-        External {
-            git: None,
-            compact_limit: CompactLimit::Default,
-            inventory: None,
-            active_sessions: None,
-        }
-    }
-}
-
 fn sep() -> String {
     format!(" {GRAY}·{RST} ")
 }
@@ -355,6 +344,17 @@ fn rate_part(label: &str, w: Option<&RateWindow>) -> Option<String> {
 mod tests {
     use super::*;
     use crate::payload::Payload;
+
+    impl Default for External {
+        fn default() -> Self {
+            External {
+                git: None,
+                compact_limit: CompactLimit::Default,
+                inventory: None,
+                active_sessions: None,
+            }
+        }
+    }
 
     fn full_payload() -> Payload {
         serde_json::from_str(

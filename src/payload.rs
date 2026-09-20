@@ -53,7 +53,6 @@ pub struct Model {
 #[serde(default)]
 pub struct Workspace {
     pub current_dir: Option<String>,
-    pub project_dir: Option<String>,
     /// Worktree name when cwd is inside a linked worktree (any worktree,
     /// not just --worktree sessions).
     pub git_worktree: Option<String>,
@@ -93,8 +92,6 @@ pub struct ContextWindow {
     pub total_input_tokens: Option<u64>,
     #[serde(deserialize_with = "lenient_u64")]
     pub context_window_size: Option<u64>,
-    pub used_percentage: Option<f64>,
-    pub remaining_percentage: Option<f64>,
 }
 
 #[derive(Deserialize, Default, Debug)]
@@ -199,7 +196,27 @@ mod tests {
                 "session_name": null}"#,
         )
         .unwrap();
-        assert!(p.context_window.unwrap().used_percentage.is_none());
+        assert!(p.session_name.is_none());
+        assert!(p.context_window.unwrap().total_input_tokens.is_none());
+    }
+
+    #[test]
+    fn unread_keys_never_abort_the_parse() {
+        // Keys the statusline does not read are not modelled. Whatever they
+        // carry — a value, null, or the wrong type — the rest must parse.
+        for unread in [
+            r#""used_percentage": 12, "remaining_percentage": 88"#,
+            r#""used_percentage": null, "remaining_percentage": null"#,
+            r#""used_percentage": "12%", "remaining_percentage": [88]"#,
+        ] {
+            let p: Payload = serde_json::from_str(&format!(
+                r#"{{"context_window": {{"total_input_tokens": 123176, {unread}}},
+                    "workspace": {{"current_dir": "/tmp/repo", "project_dir": 42}}}}"#
+            ))
+            .unwrap();
+            assert_eq!(p.cwd(), Some("/tmp/repo"));
+            assert_eq!(p.context_window.unwrap().total_input_tokens, Some(123176));
+        }
     }
 
     #[test]
