@@ -36,7 +36,7 @@ impl Default for External {
     fn default() -> Self {
         External {
             git: None,
-            compact_limit: CompactLimit::Known(200_000),
+            compact_limit: CompactLimit::Default,
             inventory: None,
             active_sessions: None,
         }
@@ -216,9 +216,12 @@ fn truncate_ellipsis(s: &str, max: usize) -> String {
 }
 
 /// ctx measured against the auto-compact window (distance to compact,
-/// not to the model ceiling). If settings.json is corrupt we measure against
-/// the real model ceiling and show a loud `cfg!` marker — never a silently
-/// invented denominator.
+/// not to the model ceiling). The window depends on both the configured
+/// `autoCompactWindow` and the model ceiling the payload reports, so the
+/// ceiling goes in even when the config is healthy: a 1M session does not
+/// compact at 200k. If settings.json is corrupt we measure against the real
+/// model ceiling and show a loud `cfg!` marker — never a silently invented
+/// denominator.
 fn ctx_part(p: &Payload, limit: CompactLimit) -> String {
     let cw = p.context_window.as_ref();
     let used = cw.and_then(|c| c.total_input_tokens).unwrap_or(0);
@@ -226,13 +229,9 @@ fn ctx_part(p: &Payload, limit: CompactLimit) -> String {
         return format!("{GRAY}ctx:--{RST}");
     }
 
-    let (denom, cfg_broken) = match limit {
-        CompactLimit::Known(n) if n > 0 => (Some(n), false),
-        _ => (
-            cw.and_then(|c| c.context_window_size).filter(|&n| n > 0),
-            true,
-        ),
-    };
+    let ceiling = cw.and_then(|c| c.context_window_size).filter(|&n| n > 0);
+    let denom = limit.denominator(ceiling);
+    let cfg_broken = limit == CompactLimit::Unavailable;
 
     let colored = match denom {
         Some(d) => {
@@ -397,7 +396,7 @@ mod tests {
         let p = full_payload();
         let ext = External {
             git: Some(git_fixture()),
-            compact_limit: CompactLimit::Known(350_000),
+            compact_limit: CompactLimit::Configured(350_000),
             inventory: Some(Inventory {
                 total_tokens: 2_400_000,
                 caught_up: true,
@@ -439,7 +438,7 @@ mod tests {
     fn partial_token_total_does_not_render() {
         let p = full_payload();
         let ext = External {
-            compact_limit: CompactLimit::Known(350_000),
+            compact_limit: CompactLimit::Configured(350_000),
             inventory: Some(Inventory {
                 total_tokens: 2_400_000,
                 caught_up: false,
@@ -465,7 +464,7 @@ mod tests {
             .unwrap()
             .used_percentage = Some(-20.0);
         let ext = External {
-            compact_limit: CompactLimit::Known(350_000),
+            compact_limit: CompactLimit::Configured(350_000),
             ..Default::default()
         };
         let out = render(&p, &ext);
@@ -481,7 +480,7 @@ mod tests {
         let mut p = full_payload();
         p.session_name = Some("re\x1b[31mview\nx".into());
         let ext = External {
-            compact_limit: CompactLimit::Known(350_000),
+            compact_limit: CompactLimit::Configured(350_000),
             ..Default::default()
         };
         let out = render(&p, &ext);
@@ -494,7 +493,7 @@ mod tests {
         let p: Payload = serde_json::from_str("{}").unwrap();
         let ext = External {
             git: None,
-            compact_limit: CompactLimit::Known(200_000),
+            compact_limit: CompactLimit::Configured(200_000),
             ..Default::default()
         };
         let out = render(&p, &ext);
@@ -521,13 +520,86 @@ mod tests {
     }
 
     #[test]
+    fn unconfigured_window_on_a_million_token_session_uses_the_ceiling() {
+        // docs/sample-payload.json is a 1M session: Claude Code reports
+        // used_percentage 12 for these very tokens. Measuring 123176 against
+        // a fixed 200k denominator claimed 61% and warned about a compaction
+        // that was 800k tokens away.
+        let p = full_payload();
+        let ext = External {
+            git: None,
+            compact_limit: CompactLimit::Default,
+            ..Default::default()
+        };
+        let out = render(&p, &ext);
+        assert!(
+            out.contains("123K/1.0M"),
+            "an unconfigured window must follow the ceiling:\n{out}"
+        );
+        assert!(
+            out.contains("(12%)"),
+            "must agree with the payload's used_percentage:\n{out}"
+        );
+        assert!(!out.contains("⚠compact"), "no compaction is near:\n{out}");
+        assert!(!out.contains("cfg!"), "the config is healthy:\n{out}");
+    }
+
+    #[test]
+    fn unconfigured_window_below_a_million_keeps_the_documented_default() {
+        let mut p = full_payload();
+        p.context_window.as_mut().unwrap().context_window_size = Some(200_000);
+        let ext = External {
+            git: None,
+            compact_limit: CompactLimit::Default,
+            ..Default::default()
+        };
+        let out = render(&p, &ext);
+        assert!(out.contains("123K/200K"), "200k stays 200k:\n{out}");
+        assert!(out.contains("(61%)"), "61% of the 200k window:\n{out}");
+    }
+
+    #[test]
+    fn configured_window_never_exceeds_the_model_ceiling() {
+        // Claude Code clamps the setting with min(ceiling, configured); a
+        // gauge that did not would understate every small-window session.
+        let mut p = full_payload();
+        p.context_window.as_mut().unwrap().context_window_size = Some(200_000);
+        let ext = External {
+            git: None,
+            compact_limit: CompactLimit::Configured(1_000_000),
+            ..Default::default()
+        };
+        let out = render(&p, &ext);
+        assert!(
+            out.contains("123K/200K"),
+            "must clamp to the ceiling:\n{out}"
+        );
+    }
+
+    #[test]
+    fn unconfigured_window_without_a_ceiling_keeps_the_documented_default() {
+        let mut p = full_payload();
+        p.context_window.as_mut().unwrap().context_window_size = None;
+        let ext = External {
+            git: None,
+            compact_limit: CompactLimit::Default,
+            ..Default::default()
+        };
+        let out = render(&p, &ext);
+        assert!(
+            out.contains("123K/200K"),
+            "no ceiling, no invention:\n{out}"
+        );
+    }
+
+    #[test]
     fn context_over_compact_window_clamps_bar_shows_true_pct() {
         // Real case: tokens can pass autoCompactWindow before compaction fires.
         let mut p = full_payload();
         p.context_window.as_mut().unwrap().total_input_tokens = Some(420_000);
         let ext = External {
             git: None,
-            compact_limit: CompactLimit::Known(350_000),
+            compact_limit: CompactLimit::Configured(350_000),
             ..Default::default()
         };
         let out = render(&p, &ext);
@@ -541,7 +613,7 @@ mod tests {
         p.session_name = Some("Revisar configuración de Claude y computer use".into());
         let ext = External {
             git: None,
-            compact_limit: CompactLimit::Known(350_000),
+            compact_limit: CompactLimit::Configured(350_000),
             ..Default::default()
         };
         let out = render(&p, &ext);
@@ -557,7 +629,7 @@ mod tests {
         let p: Payload = serde_json::from_str(r#"{"cwd": "/"}"#).unwrap();
         let ext = External {
             git: None,
-            compact_limit: CompactLimit::Known(200_000),
+            compact_limit: CompactLimit::Configured(200_000),
             ..Default::default()
         };
         // Must not panic on a path with no file_name component.
@@ -570,7 +642,7 @@ mod tests {
         p.context_window.as_mut().unwrap().total_input_tokens = Some(320_000);
         let ext = External {
             git: None,
-            compact_limit: CompactLimit::Known(350_000),
+            compact_limit: CompactLimit::Configured(350_000),
             ..Default::default()
         };
         let out = render(&p, &ext);
@@ -584,7 +656,7 @@ mod tests {
         p.thinking.as_mut().unwrap().enabled = Some(false);
         let ext = External {
             git: None,
-            compact_limit: CompactLimit::Known(350_000),
+            compact_limit: CompactLimit::Configured(350_000),
             ..Default::default()
         };
         let out = render(&p, &ext);
@@ -603,7 +675,7 @@ mod tests {
             p.pr.as_mut().unwrap().review_state = Some(state.into());
             let ext = External {
                 git: Some(git_fixture()),
-                compact_limit: CompactLimit::Known(350_000),
+                compact_limit: CompactLimit::Configured(350_000),
                 ..Default::default()
             };
             assert!(
@@ -618,7 +690,7 @@ mod tests {
         let p = full_payload();
         let ext = External {
             git: None,
-            compact_limit: CompactLimit::Known(350_000),
+            compact_limit: CompactLimit::Configured(350_000),
             ..Default::default()
         };
         let out = render(&p, &ext);
@@ -638,7 +710,7 @@ mod tests {
         inv.skill_count = Some(56);
         let ext = External {
             git: None,
-            compact_limit: CompactLimit::Known(350_000),
+            compact_limit: CompactLimit::Configured(350_000),
             inventory: Some(inv),
             active_sessions: Some(3),
         };
@@ -662,7 +734,7 @@ mod tests {
     fn single_session_is_not_signal() {
         let ext = External {
             git: None,
-            compact_limit: CompactLimit::Known(350_000),
+            compact_limit: CompactLimit::Configured(350_000),
             active_sessions: Some(1),
             ..Default::default()
         };
@@ -676,7 +748,7 @@ mod tests {
         inv.skill_count = Some(0); // a listing arrived, but nothing is loaded
         let ext = External {
             git: None,
-            compact_limit: CompactLimit::Known(350_000),
+            compact_limit: CompactLimit::Configured(350_000),
             inventory: Some(inv),
             ..Default::default()
         };
