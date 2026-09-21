@@ -1,38 +1,21 @@
-<!--
-Evidence package. See GOVERNANCE.md and agm.json.
-Zone low: delete everything below and describe your change.
-Delete the sections your zone does not require.
--->
-
-Risk zone: <!-- low | medium | high | critical -->
-
-Provenance: <!-- tool and model, when an agent produced any part of this change -->
+<!-- Describe the change, then declare what produced it. The AGM check
+     looks for the four lines below. See GOVERNANCE.md. -->
 
 ## Summary
 
 <!-- What changes and why. -->
 
-## Checks
+## Provenance
 
-<!-- State that fmt --check, clippy -D warnings, and test pass locally. -->
+- Model:
+- Harness:
+- Tokens:
+- Cost:
 
-## Behavior evidence
+<!-- Model:   every model that wrote part of this, comma-separated.
+     Harness: the tool they ran in, with a version when you have one.
+     Tokens:  total for the session. Rounded is fine.
+     Cost:    USD. A flat-rate subscription with no metered spend is 0.
 
-<!-- Before/after render sample, a new test, or equivalent proof. -->
-
-## External assumptions
-
-<!-- Each belief about payload/transcript/settings/git data, and how you
-verified it against real data. Declare what you could not verify. -->
-
-## Risk
-
-<!-- What breaks if this is wrong, and the rollback. -->
-
-## Second review
-
-<!-- Adversarial pass by a second agent or human: findings, resolution. -->
-
-## Human confirmation
-
-- [ ] I am a human. I read the diff and the evidence above, and I take responsibility for this change.
+     No agent: none / none / 0 / 0.
+     A number your harness does not report: unknown. Do not invent it. -->

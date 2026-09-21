@@ -201,12 +201,11 @@ A captured example lives in
 
 ## Governance
 
-Contributions — human or agent-mediated — carry an evidence package
-proportional to the risk of the files they touch. [GOVERNANCE.md](GOVERNANCE.md)
-explains the zones, the evidence, and the gates; [agm.json](agm.json) is
-the machine-readable form that agents read. A documentation fix carries
-no burden; a change to the installer or the release pipeline must prove
-itself.
+A pull request declares what produced it: the models, the harness, the
+tokens, the cost. Four lines, checked by the `AGM` workflow.
+[GOVERNANCE.md](GOVERNANCE.md) explains why that is the whole rule;
+[agm.json](agm.json) is the machine-readable form. Correctness is CI's
+job, review is Codex's, and the decision to merge is the maintainer's.
 
 ## Releases
 
