@@ -90,23 +90,88 @@ instead of `python3`. The expected output is identical on all platforms.
 
 ## Task: contribute a change
 
-1. Read [agm.json](agm.json). Compute the risk zone: for each changed
-   file, take the highest-severity zone whose pattern matches it; the
-   change's zone is the highest across all files.
-2. Prepare the evidence package in the pull-request body with the
-   sections agm.json requires for that zone. Start from
-   `.github/PULL_REQUEST_TEMPLATE.md`.
-3. State every external assumption (payload shape, transcript schema,
-   settings keys, git output) and how you verified it against real data.
-   Declare what you could not verify. An unverified assumption stated as
-   fact is a governance failure, not a shortcut.
-4. For high and critical zones: STOP before you submit. Show the human
-   the diff and the package. Ask the human to check the confirmation
-   box. Do not check it yourself.
-5. Never claim maintainer approval. The `AGM` check passing is not
-   approval; the maintainer's review is.
-6. Disclose your tool and model in the PR body. Keep the
-   `Co-Authored-By` trailer on commits.
+1. Describe the change in the pull-request body, then declare what
+   produced it. Four lines, from
+   `.github/PULL_REQUEST_TEMPLATE.md`:
+
+   - Model: every model that wrote part of this, comma-separated
+   - Harness: the tool they ran in, with a version when you have one
+   - Tokens: total for the session, rounded is fine
+   - Cost: USD; a flat-rate subscription with no metered spend is 0
+
+   Write them as a plain list. The gate ignores anything inside an HTML
+   comment or a fenced block, because an example is not a declaration.
+   Declare the numbers your harness actually reports. A number it does
+   not report is `unknown`. Never invent one — a fabricated cost is the
+   only way to fail this rule.
+2. State an external assumption (payload shape, transcript schema,
+   settings keys, git output) where you relied on one, and say how you
+   checked it. This is not a gate; it is the context a reviewer cannot
+   reconstruct from the diff.
+3. Keep the `Co-Authored-By` trailer on commits.
+4. Wait for the Codex review before you ask for a merge. Its findings
+   are not checks and do not appear in `gh pr checks`.
+5. Never claim maintainer approval. A green `AGM` check is not approval,
+   and neither is a Codex review with no findings.
+
+## Code Review Rules
+
+These rules govern the automated review. Review as the person who has
+this statusline on screen all day, not as a style checker. A finding
+names a payload, terminal, settings or repository state that produces a
+wrong or missing segment, and says what the user sees when it happens.
+Without that state, there is no finding.
+
+### A wrong number is worse than no number
+
+The worst outcome this project has is an invented number rendered as
+fact. A segment that declines to render is acceptable. Flag any path
+where a missing or malformed input becomes a number on screen: a
+denominator that falls back to a constant, a partial sum presented as a
+total, a percentage derived from an absent field, an arithmetic
+saturation standing in for a real count.
+
+Safe path: return `None`, drop the segment, or show the loud marker
+(`cfg!`) that [DESIGN.md](DESIGN.md) prescribes.
+
+### The payload belongs to Claude Code, not to us
+
+`src/payload.rs` models JSON this project does not own and cannot
+version. Flag a new field that is not an `Option`, a field read without
+its absent case covered, a `deny_unknown_fields`, and any statement a
+comment makes about the payload that the repository cannot back —
+`docs/sample-payload.json` is the only captured evidence of the shape.
+A comment's phrasing is not a finding; a comment's false claim is.
+
+Safe path: model the field as `Option`, add a test with it absent, and
+declare what was not verified.
+
+### The hot path renders every 300 ms
+
+Flag a process spawn, a network call, an unbounded read or an uncached
+filesystem walk added to the render path, and any cache key that does
+not include the repository or transcript path — one session reading
+another's numbers is a wrong number with extra steps.
+
+Safe path: gather in `main.rs`, cache under
+`~/.cache/claude-statusline/` with a TTL, keep `src/render.rs` pure.
+
+### What not to report
+
+CI already enforces formatting, clippy with `-D warnings`, and the test
+suite on Linux, macOS and Windows. Do not spend a comment on formatting,
+lint, naming, comment wording, test names, doc phrasing, or a refactor
+that changes nothing the user sees. Do not report an input this project
+cannot receive.
+
+A defect a contributor has to construct on purpose to trigger is not a
+finding either. This repository's governance takes a contributor at
+their word; an input nobody writes by accident describes a lie, and a
+gate does not defend against those.
+
+One finding that costs a user a wrong number beats five that cost a
+reviewer their attention. When nothing meets that bar, say so and
+approve.
 
 ## Task: modify the code
 

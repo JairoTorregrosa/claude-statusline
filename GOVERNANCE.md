@@ -1,84 +1,61 @@
 # Governance
 
-This document makes agent-mediated contributions reviewable. The rules
-live in machine-readable form in [agm.json](agm.json); this file explains
-them for humans.
+A pull request declares what produced it. That is the whole rule. The
+machine-readable form is [agm.json](agm.json); the `AGM` check enforces
+it.
 
-## Why
+## The declaration
 
-Agents make contributions cheap to produce. They do not make
-contributions cheap to verify. One maintainer reviews every change; a
-review is only as fast as the information in front of it. These rules
-move the preparation of that information to the contributor and the
-contributor's agent, and keep the decision with the maintainer.
+Four lines in the pull-request body, as a plain list — not inside a
+fenced block or an HTML comment, which the gate reads as illustration
+rather than declaration:
 
-The principle is the same one the statusline itself follows: absence must
-be declared, not silent. The statusline never renders a partial sum as a
-total and never invents a denominator. A contribution never presents an
-unverified assumption as a verified one — it declares what was checked
-and what was not.
+- Model: Opus 5 (1M context), Codex
+- Harness: Claude Code 2.1
+- Tokens: 812000
+- Cost: 0 (subscription, no metered spend)
 
-Three files divide the work. [AGENTS.md](AGENTS.md) tells an agent how to
-build and modify the project. Commit trailers record which tool produced
-a change. This document and [agm.json](agm.json) define what a change
-must prove before review.
-
-## Risk zones
-
-Every file belongs to a zone. A change's zone is the highest zone among
-its changed files.
-
-| Zone | Files | Why |
-|---|---|---|
-| critical | `install.sh`, `install.ps1`, `.github/*`, `AGENTS.md`, `GOVERNANCE.md`, `agm.json` | Writes to user machines, publishes binaries, instructs agents, or changes the rules of review itself. |
-| high | `main.rs`, `git.rs`, `cache.rs`, `sessions.rs`, `settings.rs`, `Cargo.toml`, `Cargo.lock` | Process spawns, filesystem access, cross-session state, dependency supply chain, loud-degradation semantics. |
-| medium | the rest of `src/` | Correctness of displayed numbers. A wrong number is worse than no number. |
-| low | documentation, assets | No runtime effect. |
-
-## Evidence packages
-
-The pull-request body carries the evidence. The required sections grow
-with the zone:
-
-| Zone | Required sections |
+| Field | Means |
 |---|---|
-| low | none — open the PR and CI does the rest |
-| medium | Summary · Checks · Behavior evidence |
-| high | + External assumptions · Risk |
-| critical | + Second review · Human confirmation |
+| Model | Every model that wrote part of the change. List all of them. |
+| Harness | The tool they ran in, with a version when you have one. |
+| Tokens | Total for the session. Rounded is fine. |
+| Cost | USD. A flat-rate subscription with no metered spend is 0. |
 
-**External assumptions** is the section that tests cannot replace. This
-project reads data it does not control: the stdin payload, the transcript
-JSONL, `settings.json`, git output. CI has no real transcripts, so a
-change built on a wrong schema belief passes CI and still lies on screen.
-State each belief and how you verified it against real data.
+A change written without an agent declares `none`, `none`, `0`, `0`. A
+number the harness does not report is `unknown` — declared ignorance is
+accepted, an invented number is not.
 
-**Second review** means an adversarial pass by a second agent or a human:
-someone whose task is to refute the change, with findings and their
-resolution recorded.
+Commits keep the agent's `Co-Authored-By` trailer.
 
-**Human confirmation** is a checkbox only the human contributor sets. An
-agent prepares the package; it never confirms it. This is the boundary
-between preparation and responsibility.
+## Why this and nothing else
+
+Agents make contributions cheap to produce and no cheaper to verify. The
+earlier version of this document answered that with risk zones and
+evidence packages sized to the files a change touched. It asked the
+contributor to pre-compute the maintainer's judgment, and the checklist
+grew faster than the trust it bought.
+
+What survives is the part a maintainer cannot reconstruct after the
+fact: which models wrote this, in what harness, and what it cost to
+produce. A diff shows what changed. Only the contributor knows what
+produced it, and that context changes how a review reads — an unverified
+claim from a model that ran for eight hundred thousand tokens is a
+different object from a typo fix.
+
+Everything else moved to where it belongs. Correctness is CI's job:
+`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and
+`cargo test` on Linux, macOS and Windows. Finding what CI cannot is
+Codex's job; its review rules live in
+[AGENTS.md](AGENTS.md#code-review-rules). Deciding is the maintainer's
+job.
 
 ## Gates
 
-The `AGM` workflow enforces the mechanical gates on every pull request:
-it computes the zone from the changed files, compares it with the
-declared zone, and checks that the required sections and the
-confirmation box are present. Its job summary is the review packet: zone,
-evidence status, missing items.
+`AGM` checks that the four lines are present and carry values. It cannot
+verify what they say, and does not try. The declaration is the
+contributor's word, on the record — a false one is a lie, not a gate
+failure.
 
-The final gate — approval — belongs to the maintainer. No tool sets it,
-no contributor statement substitutes for it, and a green `AGM` check does
-not imply it.
-
-## Proportionality
-
-A low-risk change carries no added burden: fix a typo, open the PR, done.
-The obligations concentrate where a wrong change hurts: the installer
-that edits `~/.claude/settings.json`, the workflows that publish
-binaries, the code that spawns processes or holds cross-session state.
-For changes that need assurance beyond these rules (signed commits,
-protected branches), the maintainer can add platform controls on top;
-this document does not replace them.
+Merging belongs to the maintainer. A green `AGM` check is not approval,
+and neither is a Codex review with no findings.
