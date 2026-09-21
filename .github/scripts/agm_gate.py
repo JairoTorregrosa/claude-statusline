@@ -22,6 +22,12 @@ LINE = r"^[ \t]*[-*+]?[ \t]*{key}[ \t]*:[ \t]*(?P<value>.*?)[ \t]*$"
 # An unedited template placeholder is not a declaration.
 PLACEHOLDER = re.compile(r"^(<!--.*|<.*>|\.\.\.|TODO|N/?A)$", re.IGNORECASE)
 
+# The template explains each field inside an HTML comment. Those lines look
+# exactly like declarations, so a body that keeps the comment and deletes the
+# real rows would pass with the template's own prose. Comments are not
+# declarations: drop them before matching, unterminated ones included.
+COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
+
 
 def declared(body, key):
     """Return the value declared for `key`, or None when it is missing."""
@@ -39,6 +45,7 @@ def main():
     declaration = manifest["declaration"]
     # GitHub sends the body with CRLF endings; `$` would keep the \r.
     body = (os.environ.get("BODY") or "").replace("\r\n", "\n")
+    body = COMMENT.sub("", body)
 
     found, missing = {}, []
     for field in declaration["fields"]:

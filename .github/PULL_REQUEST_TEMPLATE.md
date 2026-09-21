@@ -12,10 +12,10 @@
 - Tokens:
 - Cost:
 
-<!-- Model:   every model that wrote part of this, comma-separated.
-     Harness: the tool they ran in, with a version when you have one.
-     Tokens:  total for the session. Rounded is fine.
-     Cost:    USD. A flat-rate subscription with no metered spend is 0.
+<!-- Model   — every model that wrote part of this, comma-separated.
+     Harness — the tool they ran in, with a version when you have one.
+     Tokens  — total for the session. Rounded is fine.
+     Cost    — USD. A flat-rate subscription with no metered spend is 0.
 
-     No agent: none / none / 0 / 0.
-     A number your harness does not report: unknown. Do not invent it. -->
+     Wrote it yourself? none, none, 0, 0.
+     A number your harness does not report is unknown. Do not invent it. -->
