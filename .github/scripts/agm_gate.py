@@ -40,14 +40,18 @@ FENCE = re.compile(
 
 
 def declared(body, key):
-    """Return the value declared for `key`, or None when it is missing."""
-    m = re.search(LINE.format(key=re.escape(key)), body, re.IGNORECASE | re.MULTILINE)
-    if m is None:
-        return None
-    value = m.group("value").strip()
-    if not value or PLACEHOLDER.match(value):
-        return None
-    return value
+    """Return the value declared for `key`, or None when it is missing.
+
+    Every occurrence is considered, not the first: the template ships the
+    four rows empty, and a contributor who fills them in further down the
+    body rather than in place has still declared.
+    """
+    pattern = LINE.format(key=re.escape(key))
+    for m in re.finditer(pattern, body, re.IGNORECASE | re.MULTILINE):
+        value = m.group("value").strip()
+        if value and not PLACEHOLDER.match(value):
+            return value
+    return None
 
 
 def main():
