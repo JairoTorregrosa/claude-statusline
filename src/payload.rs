@@ -5,6 +5,12 @@
 //! only for subscribers, `current_usage` null right after /compact, `pr`
 //! only while a PR is open, ...). A missing field must degrade the render,
 //! never abort it.
+//!
+//! The payload carries more keys than this model. No struct sets
+//! `deny_unknown_fields`, so a key Claude Code adds is ignored instead of
+//! fatal, and a key this model drops keeps parsing. Each deliberate omission
+//! is declared at the struct that omits it; `docs/sample-payload.json` keeps
+//! the full shape.
 
 use serde::{Deserialize, Deserializer};
 
@@ -53,12 +59,13 @@ pub struct Model {
 #[serde(default)]
 pub struct Workspace {
     pub current_dir: Option<String>,
-    pub project_dir: Option<String>,
     /// Worktree name when cwd is inside a linked worktree (any worktree,
     /// not just --worktree sessions).
     pub git_worktree: Option<String>,
     /// Present when the repo has an `origin` remote.
     pub repo: Option<RepoIdentity>,
+    // Not modeled: `project_dir`, `added_dirs`. The path segment renders
+    // `current_dir`, and no segment asks a question those two answer.
 }
 
 #[derive(Deserialize, Default, Debug)]
@@ -91,10 +98,15 @@ pub struct ContextWindow {
     /// (input + cache_creation + cache_read). 0 before the first response.
     #[serde(deserialize_with = "lenient_u64")]
     pub total_input_tokens: Option<u64>,
+    /// The model ceiling. Half of the ctx denominator; `CompactLimit`
+    /// turns it into the auto-compact window.
     #[serde(deserialize_with = "lenient_u64")]
     pub context_window_size: Option<u64>,
-    pub used_percentage: Option<f64>,
-    pub remaining_percentage: Option<f64>,
+    // Not modeled: `used_percentage`, `remaining_percentage`. Both measure
+    // against the model ceiling, while ctx measures the distance to
+    // auto-compact (`render::ctx_part`), so reading them would answer a
+    // question the segment does not ask. `current_usage` and
+    // `total_output_tokens` answer no segment's question either.
 }
 
 #[derive(Deserialize, Default, Debug)]
@@ -193,13 +205,42 @@ mod tests {
 
     #[test]
     fn null_fields_parse() {
-        // used_percentage / current_usage are documented as nullable.
+        // Claude Code sends explicit nulls. A null is an absent value, never
+        // a parse error that would blank every segment.
         let p: Payload = serde_json::from_str(
-            r#"{"context_window": {"used_percentage": null, "current_usage": null},
-                "session_name": null}"#,
+            r#"{"context_window": {"total_input_tokens": null,
+                                   "context_window_size": null},
+                "session_name": null, "cost": null, "rate_limits": null}"#,
         )
         .unwrap();
-        assert!(p.context_window.unwrap().used_percentage.is_none());
+        let cw = p.context_window.unwrap();
+        assert_eq!(cw.total_input_tokens, None);
+        assert_eq!(cw.context_window_size, None);
+        assert!(p.session_name.is_none());
+        assert!(p.cost.is_none());
+        assert!(p.rate_limits.is_none());
+    }
+
+    #[test]
+    fn unmodeled_keys_are_ignored() {
+        // The keys this model declines to carry still arrive on every real
+        // payload. They must parse and leave the modeled fields intact.
+        let p: Payload = serde_json::from_str(
+            r#"{"workspace": {"current_dir": "/tmp/repo", "project_dir": "/tmp/other",
+                              "added_dirs": []},
+                "context_window": {"total_input_tokens": 123176,
+                                   "context_window_size": 1000000,
+                                   "total_output_tokens": 492,
+                                   "current_usage": {"input_tokens": 2},
+                                   "used_percentage": 12,
+                                   "remaining_percentage": 88},
+                "exceeds_200k_tokens": false}"#,
+        )
+        .unwrap();
+        assert_eq!(p.cwd(), Some("/tmp/repo"));
+        let cw = p.context_window.unwrap();
+        assert_eq!(cw.total_input_tokens, Some(123176));
+        assert_eq!(cw.context_window_size, Some(1_000_000));
     }
 
     #[test]
