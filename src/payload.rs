@@ -9,8 +9,9 @@
 //! The payload carries more keys than this model. No struct sets
 //! `deny_unknown_fields`, so a key Claude Code adds is ignored instead of
 //! fatal, and a key this model drops keeps parsing. Each deliberate omission
-//! is declared at the struct that omits it; `docs/sample-payload.json` keeps
-//! the full shape.
+//! is declared at the struct that omits it. `docs/sample-payload.json` is
+//! the captured example of the shape; it is one session, so it carries no
+//! `transcript_path` and no `pr`.
 
 use serde::{Deserialize, Deserializer};
 
@@ -46,6 +47,11 @@ pub struct Payload {
     pub fast_mode: Option<bool>,
     pub rate_limits: Option<RateLimits>,
     pub pr: Option<Pr>,
+    // Not modeled: `session_id`, which no segment renders — the session is
+    // identified by `session_name` and by its transcript path — and
+    // `exceeds_200k_tokens`, a boolean against a fixed 200k that the ctx
+    // segment does not ask: it measures the auto-compact window, which a
+    // 1M session sets for itself.
 }
 
 #[derive(Deserialize, Default, Debug)]
@@ -89,6 +95,9 @@ impl RepoIdentity {
 #[serde(default)]
 pub struct Cost {
     pub total_cost_usd: Option<f64>,
+    // Not modeled: `total_duration_ms`, `total_api_duration_ms`,
+    // `total_lines_added`, `total_lines_removed`. They describe the session's
+    // history; the cost segment answers what it has spent so far.
 }
 
 #[derive(Deserialize, Default, Debug)]
@@ -226,8 +235,12 @@ mod tests {
         // The keys this model declines to carry still arrive on every real
         // payload. They must parse and leave the modeled fields intact.
         let p: Payload = serde_json::from_str(
-            r#"{"workspace": {"current_dir": "/tmp/repo", "project_dir": "/tmp/other",
+            r#"{"session_id": "00000000-0000-0000-0000-000000000000",
+                "workspace": {"current_dir": "/tmp/repo", "project_dir": "/tmp/other",
                               "added_dirs": []},
+                "cost": {"total_cost_usd": 3.72, "total_duration_ms": 842605,
+                         "total_api_duration_ms": 547863,
+                         "total_lines_added": 128, "total_lines_removed": 31},
                 "context_window": {"total_input_tokens": 123176,
                                    "context_window_size": 1000000,
                                    "total_output_tokens": 492,
@@ -238,6 +251,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p.cwd(), Some("/tmp/repo"));
+        assert_eq!(p.cost.unwrap().total_cost_usd, Some(3.72));
         let cw = p.context_window.unwrap();
         assert_eq!(cw.total_input_tokens, Some(123176));
         assert_eq!(cw.context_window_size, Some(1_000_000));
