@@ -6,14 +6,14 @@ it.
 
 ## The declaration
 
-Four lines in the pull-request body:
+Four lines in the pull-request body, as a plain list — not inside a
+fenced block or an HTML comment, which the gate reads as illustration
+rather than declaration:
 
-```
 - Model: Opus 5 (1M context), Codex
 - Harness: Claude Code 2.1
 - Tokens: 812000
 - Cost: 0 (subscription, no metered spend)
-```
 
 | Field | Means |
 |---|---|

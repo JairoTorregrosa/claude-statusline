@@ -28,6 +28,14 @@ PLACEHOLDER = re.compile(r"^(<!--.*|<.*>|\.\.\.|TODO|N/?A)$", re.IGNORECASE)
 # declarations: drop them before matching, unterminated ones included.
 COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
 
+# Same reasoning for a fenced block: the docs show the four lines as an
+# example, and an example pasted into a summary is an illustration, not a
+# declaration. The template asks for a plain list for exactly this reason.
+FENCE = re.compile(
+    r"^[ \t]*(?P<mark>`{3,}|~{3,}).*?(?:^[ \t]*(?P=mark)[ \t]*$|\Z)",
+    re.DOTALL | re.MULTILINE,
+)
+
 
 def declared(body, key):
     """Return the value declared for `key`, or None when it is missing."""
@@ -45,7 +53,7 @@ def main():
     declaration = manifest["declaration"]
     # GitHub sends the body with CRLF endings; `$` would keep the \r.
     body = (os.environ.get("BODY") or "").replace("\r\n", "\n")
-    body = COMMENT.sub("", body)
+    body = FENCE.sub("", COMMENT.sub("", body))
 
     found, missing = {}, []
     for field in declaration["fields"]:

@@ -94,13 +94,13 @@ instead of `python3`. The expected output is identical on all platforms.
    produced it. Four lines, from
    `.github/PULL_REQUEST_TEMPLATE.md`:
 
-   ```
    - Model: every model that wrote part of this, comma-separated
    - Harness: the tool they ran in, with a version when you have one
    - Tokens: total for the session, rounded is fine
    - Cost: USD; a flat-rate subscription with no metered spend is 0
-   ```
 
+   Write them as a plain list. The gate ignores anything inside an HTML
+   comment or a fenced block, because an example is not a declaration.
    Declare the numbers your harness actually reports. A number it does
    not report is `unknown`. Never invent one — a fabricated cost is the
    only way to fail this rule.
