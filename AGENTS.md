@@ -164,6 +164,11 @@ lint, naming, comment wording, test names, doc phrasing, or a refactor
 that changes nothing the user sees. Do not report an input this project
 cannot receive.
 
+A defect a contributor has to construct on purpose to trigger is not a
+finding either. This repository's governance takes a contributor at
+their word; an input nobody writes by accident describes a lie, and a
+gate does not defend against those.
+
 One finding that costs a user a wrong number beats five that cost a
 reviewer their attention. When nothing meets that bar, say so and
 approve.

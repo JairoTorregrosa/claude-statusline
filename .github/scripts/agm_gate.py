@@ -32,7 +32,9 @@ COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
 # example, and an example pasted into a summary is an illustration, not a
 # declaration. The template asks for a plain list for exactly this reason.
 FENCE = re.compile(
-    r"^[ \t]*(?P<mark>`{3,}|~{3,}).*?(?:^[ \t]*(?P=mark)[ \t]*$|\Z)",
+    # A list marker may precede the opener: `- ```` opens a fence nested in
+    # a list item, and the lines under it are still illustration.
+    r"^[ \t]*(?:[-*+][ \t]+)?(?P<mark>`{3,}|~{3,}).*?(?:^[ \t]*(?P=mark)[ \t]*$|\Z)",
     re.DOTALL | re.MULTILINE,
 )
 
