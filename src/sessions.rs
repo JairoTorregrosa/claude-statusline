@@ -1,9 +1,10 @@
-//! Count of active Claude Code sessions on this machine.
+//! Count of recently written top-level Claude Code session transcripts.
 //!
-//! A live session appends to its transcript continuously, so "active" is
-//! observable as a recent mtime on `~/.claude/projects/*/*.jsonl`. This is
-//! a pure filesystem walk: readdir + stat, no process spawns. The result
-//! is machine-global, so the cache entry is too (10s TTL).
+//! A recent mtime on `~/.claude/projects/*/*.jsonl` is a proxy for session
+//! activity, not proof that its process is still running. Idle sessions can
+//! be absent and recently ended sessions can remain counted. This is a pure
+//! filesystem walk: readdir + stat, no process spawns. The count is
+//! machine-global, so the cache entry is too (10s TTL).
 
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
@@ -11,7 +12,7 @@ use std::time::{Duration, SystemTime};
 use crate::cache;
 
 const TTL: Duration = Duration::from_secs(10);
-/// A transcript touched within this window counts as an active session.
+/// A top-level transcript touched within this window is counted.
 const ACTIVE_WINDOW: Duration = Duration::from_secs(60);
 
 pub fn active_count() -> Option<u64> {

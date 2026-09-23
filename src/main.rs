@@ -6,7 +6,7 @@
 //!                  spawn + one `git log -1`, at most every 4s per repo.
 //!   ambient path — loaded MCP/skill inventory and session token totals
 //!                  from the transcript (incremental, offset-tracked scan)
-//!                  and active-session count (mtime walk). Both cached,
+//!                  and recent-session count (mtime walk). Both cached,
 //!                  both optional.
 //!
 //! Stdout is the product surface; diagnostics go to stderr.
