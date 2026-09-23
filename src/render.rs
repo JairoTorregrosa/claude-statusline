@@ -221,15 +221,14 @@ fn ctx_part(p: &Payload, limit: CompactLimit) -> String {
 
     let colored = match denom {
         Some(d) => {
-            let pct = used.saturating_mul(100) / d;
-            let remaining = 100_i64.saturating_sub(pct as i64);
+            let pct = u128::from(used) * 100 / u128::from(d);
             let body = format!("ctx:{}/{} ({pct}%)", fmt_tokens(used), fmt_tokens(d));
-            if remaining <= 15 {
+            if pct >= 85 {
                 // Space after the glyph: U+26A0 is neutral-width by the tables,
                 // but terminals such as Windows Terminal draw it two cells wide
                 // and advance one, so a label glued to it is overdrawn.
                 format!("{RED}{body}{RST} {RED}{BOLD}⚠ compact{RST}")
-            } else if remaining <= 30 {
+            } else if pct >= 70 {
                 format!("{YELLOW}{body}{RST}")
             } else {
                 format!("{GREEN}{body}{RST}")
@@ -608,6 +607,21 @@ mod tests {
             !out.contains('%'),
             "unknown percentage stays absent:\n{out}"
         );
+    }
+
+    #[test]
+    fn context_percentage_does_not_saturate_large_counts() {
+        let p: Payload = serde_json::from_str(&format!(
+            r#"{{"context_window":{{"total_input_tokens":{},"context_window_size":200000}}}}"#,
+            u64::MAX
+        ))
+        .unwrap();
+        let ext = External {
+            compact_limit: CompactLimit::Default,
+            ..Default::default()
+        };
+        let out = render(&p, &ext);
+        assert!(out.contains("(9223372036854775%)"), "{out}");
     }
 
     #[test]
