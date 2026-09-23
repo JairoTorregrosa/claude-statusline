@@ -5,6 +5,13 @@
 //! only for subscribers, `current_usage` null right after /compact, `pr`
 //! only while a PR is open, ...). A missing field must degrade the render,
 //! never abort it.
+//!
+//! The payload carries more keys than this model. No struct sets
+//! `deny_unknown_fields`, so a key Claude Code adds is ignored instead of
+//! fatal, and a key this model drops keeps parsing. Each deliberate omission
+//! is declared at the struct that omits it. `docs/sample-payload.json` is
+//! the captured example of the shape; it is one session, so it carries no
+//! `transcript_path` and no `pr`.
 
 use serde::{Deserialize, Deserializer};
 
@@ -40,6 +47,11 @@ pub struct Payload {
     pub fast_mode: Option<bool>,
     pub rate_limits: Option<RateLimits>,
     pub pr: Option<Pr>,
+    // Not modeled: `session_id`, which no segment renders — the session is
+    // identified by `session_name` and by its transcript path — and
+    // `exceeds_200k_tokens`, a boolean against a fixed 200k that the ctx
+    // segment does not ask: it measures the auto-compact window, which a
+    // 1M session sets for itself.
 }
 
 #[derive(Deserialize, Default, Debug)]
@@ -58,6 +70,8 @@ pub struct Workspace {
     pub git_worktree: Option<String>,
     /// Present when the repo has an `origin` remote.
     pub repo: Option<RepoIdentity>,
+    // Not modeled: `project_dir`, `added_dirs`. The path segment renders
+    // `current_dir`, and no segment asks a question those two answer.
 }
 
 #[derive(Deserialize, Default, Debug)]
@@ -81,6 +95,9 @@ impl RepoIdentity {
 #[serde(default)]
 pub struct Cost {
     pub total_cost_usd: Option<f64>,
+    // Not modeled: `total_duration_ms`, `total_api_duration_ms`,
+    // `total_lines_added`, `total_lines_removed`. They describe the session's
+    // history; the cost segment answers what it has spent so far.
 }
 
 #[derive(Deserialize, Default, Debug)]
@@ -90,8 +107,15 @@ pub struct ContextWindow {
     /// (input + cache_creation + cache_read). 0 before the first response.
     #[serde(deserialize_with = "lenient_u64")]
     pub total_input_tokens: Option<u64>,
+    /// The model ceiling. Half of the ctx denominator; `CompactLimit`
+    /// turns it into the auto-compact window.
     #[serde(deserialize_with = "lenient_u64")]
     pub context_window_size: Option<u64>,
+    // Not modeled: `used_percentage`, `remaining_percentage`. Both measure
+    // against the model ceiling, while ctx measures the distance to
+    // auto-compact (`render::ctx_part`), so reading them would answer a
+    // question the segment does not ask. `current_usage` and
+    // `total_output_tokens` answer no segment's question either.
 }
 
 #[derive(Deserialize, Default, Debug)]
@@ -190,38 +214,59 @@ mod tests {
 
     #[test]
     fn null_fields_parse() {
-        // A null on a modelled key is None, through the typed path
-        // (session_name) and through lenient_u64 (the counts). current_usage
-        // is documented as nullable and is not modelled.
+        // Claude Code sends explicit nulls. A null is an absent value, never
+        // a parse error that would blank every segment.
         let p: Payload = serde_json::from_str(
-            r#"{"context_window": {"total_input_tokens": null, "context_window_size": null,
-                                   "current_usage": null},
-                "session_name": null}"#,
+            r#"{"context_window": {"total_input_tokens": null,
+                                   "context_window_size": null},
+                "session_name": null, "cost": null, "rate_limits": null}"#,
         )
         .unwrap();
-        assert!(p.session_name.is_none());
         let cw = p.context_window.unwrap();
         assert_eq!(cw.total_input_tokens, None);
         assert_eq!(cw.context_window_size, None);
+        assert!(p.session_name.is_none());
+        assert!(p.cost.is_none());
+        assert!(p.rate_limits.is_none());
     }
 
     #[test]
-    fn unread_keys_never_abort_the_parse() {
-        // Keys the statusline does not read are not modelled. Whatever they
-        // carry — a value, null, or the wrong type — the rest must parse.
-        for unread in [
-            r#""used_percentage": 12, "remaining_percentage": 88"#,
-            r#""used_percentage": null, "remaining_percentage": null"#,
-            r#""used_percentage": "12%", "remaining_percentage": [88]"#,
-        ] {
-            let p: Payload = serde_json::from_str(&format!(
-                r#"{{"context_window": {{"total_input_tokens": 123176, {unread}}},
-                    "workspace": {{"current_dir": "/tmp/repo", "project_dir": 42}}}}"#
-            ))
-            .unwrap();
-            assert_eq!(p.cwd(), Some("/tmp/repo"));
-            assert_eq!(p.context_window.unwrap().total_input_tokens, Some(123176));
-        }
+    fn unmodeled_keys_are_ignored() {
+        // The keys this model declines to carry still arrive on every real
+        // payload. They must parse and leave the modeled fields intact.
+        let p: Payload = serde_json::from_str(
+            r#"{"session_id": "00000000-0000-0000-0000-000000000000",
+                "workspace": {"current_dir": "/tmp/repo", "project_dir": "/tmp/other",
+                              "added_dirs": []},
+                "cost": {"total_cost_usd": 3.72, "total_duration_ms": 842605,
+                         "total_api_duration_ms": 547863,
+                         "total_lines_added": 128, "total_lines_removed": 31},
+                "context_window": {"total_input_tokens": 123176,
+                                   "context_window_size": 1000000,
+                                   "total_output_tokens": 492,
+                                   "current_usage": {"input_tokens": 2},
+                                   "used_percentage": 12,
+                                   "remaining_percentage": 88},
+                "exceeds_200k_tokens": false}"#,
+        )
+        .unwrap();
+        assert_eq!(p.cwd(), Some("/tmp/repo"));
+        assert_eq!(p.cost.unwrap().total_cost_usd, Some(3.72));
+        let cw = p.context_window.unwrap();
+        assert_eq!(cw.total_input_tokens, Some(123176));
+        assert_eq!(cw.context_window_size, Some(1_000_000));
+    }
+
+    #[test]
+    fn unmodeled_keys_with_wrong_types_are_ignored() {
+        let p: Payload = serde_json::from_str(
+            r#"{"workspace": {"current_dir": "/tmp/repo", "project_dir": 42},
+                "context_window": {"total_input_tokens": 123176,
+                                   "used_percentage": "12%", "remaining_percentage": [88]}}"#,
+        )
+        .unwrap();
+        assert_eq!(p.cwd(), Some("/tmp/repo"));
+        assert_eq!(p.context_window.unwrap().total_input_tokens, Some(123176));
     }
 
     #[test]
