@@ -258,6 +258,18 @@ mod tests {
     }
 
     #[test]
+    fn unmodeled_keys_with_wrong_types_are_ignored() {
+        let p: Payload = serde_json::from_str(
+            r#"{"workspace": {"current_dir": "/tmp/repo", "project_dir": 42},
+                "context_window": {"total_input_tokens": 123176,
+                                   "used_percentage": "12%", "remaining_percentage": [88]}}"#,
+        )
+        .unwrap();
+        assert_eq!(p.cwd(), Some("/tmp/repo"));
+        assert_eq!(p.context_window.unwrap().total_input_tokens, Some(123176));
+    }
+
+    #[test]
     fn full_payload_parses() {
         let p: Payload = serde_json::from_str(
             r#"{
