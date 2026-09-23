@@ -204,13 +204,10 @@ fn truncate_ellipsis(s: &str, max: usize) -> String {
     }
 }
 
-/// ctx measured against the auto-compact window (distance to compact,
-/// not to the model ceiling). The window depends on both the configured
-/// `autoCompactWindow` and the model ceiling the payload reports, so the
-/// ceiling goes in even when the config is healthy: a 1M session does not
-/// compact at 200k. If settings.json is corrupt we measure against the real
-/// model ceiling and show a loud `cfg!` marker — never a silently invented
-/// denominator.
+/// The denominator requires the model ceiling reported by the payload,
+/// including when `autoCompactWindow` is configured, because the configured
+/// value may be capped. Without a ceiling, show only the known used count.
+/// A broken settings file adds `cfg!`.
 fn ctx_part(p: &Payload, limit: CompactLimit) -> String {
     let cw = p.context_window.as_ref();
     let used = cw.and_then(|c| c.total_input_tokens).unwrap_or(0);
@@ -224,15 +221,14 @@ fn ctx_part(p: &Payload, limit: CompactLimit) -> String {
 
     let colored = match denom {
         Some(d) => {
-            let pct = used.saturating_mul(100) / d;
-            let remaining = 100_i64.saturating_sub(pct as i64);
+            let pct = u128::from(used) * 100 / u128::from(d);
             let body = format!("ctx:{}/{} ({pct}%)", fmt_tokens(used), fmt_tokens(d));
-            if remaining <= 15 {
+            if pct >= 85 {
                 // Space after the glyph: U+26A0 is neutral-width by the tables,
                 // but terminals such as Windows Terminal draw it two cells wide
                 // and advance one, so a label glued to it is overdrawn.
                 format!("{RED}{body}{RST} {RED}{BOLD}⚠ compact{RST}")
-            } else if remaining <= 30 {
+            } else if pct >= 70 {
                 format!("{YELLOW}{body}{RST}")
             } else {
                 format!("{GREEN}{body}{RST}")
@@ -274,6 +270,7 @@ fn line3(p: &Payload, ext: &External) -> String {
     if let Some(inv) = &ext.inventory
         && inv.caught_up
         && !inv.lossy
+        && !inv.incomplete
         && inv.total_tokens > 0
     {
         parts.push(format!(
@@ -292,9 +289,9 @@ fn line3(p: &Payload, ext: &External) -> String {
 }
 
 // ── Line 4 (ambient, deviation-only): mcp · skills · sessions ───────────
-// Loaded-inventory counts: what this session pays context for, whether or
-// not it is used. Absent entirely when nothing is loaded and only one
-// session is active. Ambient state must not shout.
+// Session transcript inventory plus a machine-wide recent-transcript count.
+// Absent when no loaded inventory is known and fewer than two recent
+// top-level transcripts are found.
 fn line4(ext: &External) -> String {
     let mut parts: Vec<String> = Vec::new();
 
@@ -454,6 +451,24 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_or_lossy_usage_does_not_render_total() {
+        let p = full_payload();
+        for (incomplete, lossy) in [(true, false), (false, true)] {
+            let ext = External {
+                inventory: Some(Inventory {
+                    total_tokens: 100,
+                    caught_up: true,
+                    incomplete,
+                    lossy,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            assert!(!render(&p, &ext).contains("tok:"));
+        }
+    }
+
+    #[test]
     fn out_of_range_percentage_does_not_render() {
         let mut p = full_payload();
         p.rate_limits
@@ -577,19 +592,36 @@ mod tests {
     }
 
     #[test]
-    fn unconfigured_window_without_a_ceiling_keeps_the_documented_default() {
-        let mut p = full_payload();
-        p.context_window.as_mut().unwrap().context_window_size = None;
+    fn context_without_window_size_shows_only_reported_tokens() {
+        let p: Payload =
+            serde_json::from_str(r#"{"context_window":{"total_input_tokens":123176}}"#).unwrap();
         let ext = External {
             git: None,
             compact_limit: CompactLimit::Default,
             ..Default::default()
         };
         let out = render(&p, &ext);
+        assert!(out.contains("ctx:123K"), "reported count survives:\n{out}");
+        assert!(!out.contains("/200K"), "unknown limit stays absent:\n{out}");
         assert!(
-            out.contains("123K/200K"),
-            "no ceiling, no invention:\n{out}"
+            !out.contains('%'),
+            "unknown percentage stays absent:\n{out}"
         );
+    }
+
+    #[test]
+    fn context_percentage_does_not_saturate_large_counts() {
+        let p: Payload = serde_json::from_str(&format!(
+            r#"{{"context_window":{{"total_input_tokens":{},"context_window_size":200000}}}}"#,
+            u64::MAX
+        ))
+        .unwrap();
+        let ext = External {
+            compact_limit: CompactLimit::Default,
+            ..Default::default()
+        };
+        let out = render(&p, &ext);
+        assert!(out.contains("(9223372036854775%)"), "{out}");
     }
 
     #[test]

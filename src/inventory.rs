@@ -1,22 +1,18 @@
 //! Loaded MCP servers, skills, and total tokens for this session, from
 //! the transcript.
 //!
-//! Why "loaded" and not "used": every connected MCP server and every
-//! available skill injects definitions into the context on every turn.
-//! The count is a context-weight and capability inventory — it explains
-//! the ctx number and surfaces bloat. A used-but-not-loaded state cannot
-//! exist; a loaded-but-never-used server is exactly the waste you want
-//! to see.
+//! The counts describe tools, instructions, and skills listed in this
+//! session's transcript, rather than historical tool calls. A server used
+//! earlier can disappear from the current inventory after a removal delta.
 //!
-//! Token totals: each assistant record carries `message.usage` with the
-//! API token counts for one response (fresh input, cache writes, cache
-//! reads, output; an absent counter counts as zero). One response writes
-//! several consecutive records — one per content block — with the same
-//! `message.id` and identical usage, so the first record for an id
-//! counts and repeats are skipped. A record without an id cannot be
-//! deduplicated and is not counted. The sum over distinct ids is the
-//! session total; it renders only once the scan has reached the end of
-//! the transcript (`caught_up`), because a partial sum is not a total.
+//! Token totals: assistant records with `message.usage` report fresh input,
+//! cache writes, cache reads, and output. Local transcripts show all four
+//! counters, including explicit zeroes, but this is not a schema guarantee.
+//! Repeated records for one `message.id` can revise the usage, so the latest
+//! complete record replaces the previous contribution. A missing or invalid
+//! counter leaves that id incomplete; the total stays hidden until a complete
+//! repeat arrives. If the next id arrives first, the total is unrecoverable.
+//! The sum renders only once the scan reaches the end (`caught_up`).
 //! A line longer than one pass budget is discarded to its newline; when
 //! its head classifies as relevant, the total is marked `lossy` and does
 //! not render — a lower bound is not a total either.
@@ -30,7 +26,7 @@
 //!   (plugin reloads change the inventory mid-session).
 //! - `deferred_tools_delta` → `addedNames`/`readdedNames`/`removedNames`
 //!   applied in order; `mcp__<server>__<tool>` names yield the loaded
-//!   server set. `pendingMcpServers` names servers awaiting schemas.
+//!   server set. Pending servers have no loaded schema and are excluded.
 //! - `mcp_instructions_delta` → servers whose instructions are injected.
 //!
 //! Known limit: a server whose tools are neither deferred nor carrying
@@ -65,20 +61,24 @@ pub struct Inventory {
     /// totals render only when true.
     pub caught_up: bool,
     /// A discarded oversized line classified as relevant: the token total
-    /// is a lower bound, not a total, and must not render.
+    /// is a lower bound, not a total, and must not render. Also set when an
+    /// incomplete usage record can no longer be repaired by a repeat.
     pub lossy: bool,
+    /// The most recent usage id has no complete four-counter record yet.
+    pub incomplete: bool,
     /// Latest full-listing skill count. None until a listing is seen.
     pub skill_count: Option<u64>,
     /// Live deferred `mcp__*` tool names (adds minus removes).
     pub mcp_tools: HashSet<String>,
-    /// Server names from instruction deltas and pending-schema lists.
+    /// Server names whose instructions were loaded in this session.
     pub mcp_servers: HashSet<String>,
-    /// Session-total tokens: fresh input + cache writes + cache reads +
-    /// output, summed over distinct assistant message ids.
+    /// Tokens recorded in this transcript: fresh input + cache writes +
+    /// cache reads + output, summed over distinct assistant message ids.
     pub total_tokens: u64,
-    /// Id of the last counted usage record. Records repeat per content
-    /// block with identical usage: the first one counts.
+    /// Id of the last usage record. Repeats can revise its counters.
     pub last_usage_id: Option<String>,
+    /// Contribution of the most recent complete usage id.
+    pub last_usage_tokens: u64,
 }
 
 impl Inventory {
@@ -207,7 +207,7 @@ fn head_contains(line: &str, needle: &[u8]) -> bool {
 /// test and are never JSON-parsed. The prefilter only saves parses; the
 /// full parse still validates the record shape.
 fn interesting(line: &str) -> bool {
-    (head_contains(line, br#""role":"assistant""#) && line.contains(r#""usage""#))
+    head_contains(line, br#""role":"assistant""#)
         || (head_contains(line, br#""attachment":"#)
             && (line.contains("skill_listing")
                 || line.contains("deferred_tools_delta")
@@ -219,13 +219,19 @@ fn apply_line(line: &str, state: &mut Inventory) {
         return;
     }
     let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+        if head_contains(line, br#""role":"assistant""#) {
+            state.lossy = true;
+        }
         return; // malformed line: skip, never abort the scan
     };
-    if v.get("type").and_then(|t| t.as_str()) == Some("assistant")
-        && let Some(msg) = v.get("message")
-        && let Some(usage) = msg.get("usage")
-    {
-        apply_usage(msg.get("id").and_then(|i| i.as_str()), usage, state);
+    if v.get("type").and_then(|t| t.as_str()) == Some("assistant") {
+        if let Some(msg) = v.get("message")
+            && let Some(usage) = msg.get("usage")
+        {
+            apply_usage(msg.get("id").and_then(|i| i.as_str()), usage, state);
+        } else {
+            state.lossy = true;
+        }
         return;
     }
     let Some(att) = v.get("attachment") else {
@@ -252,9 +258,6 @@ fn apply_line(line: &str, state: &mut Inventory) {
             for name in str_items(att, "removedNames") {
                 state.mcp_tools.remove(name);
             }
-            for server in str_items(att, "pendingMcpServers") {
-                state.mcp_servers.insert(server.to_string());
-            }
         }
         Some("mcp_instructions_delta") => {
             for server in str_items(att, "addedNames") {
@@ -269,14 +272,27 @@ fn apply_line(line: &str, state: &mut Inventory) {
 }
 
 fn apply_usage(id: Option<&str>, usage: &serde_json::Value, state: &mut Inventory) {
-    // First record for an id wins; a record without an id cannot be
-    // deduplicated and is not counted.
     let Some(id) = id.filter(|i| !i.is_empty()) else {
+        state.lossy = true;
         return;
     };
-    if state.last_usage_id.as_deref() == Some(id) {
-        return;
+    let repeat = state.last_usage_id.as_deref() == Some(id);
+    if !repeat {
+        if state.incomplete {
+            state.lossy = true;
+        }
+        state.last_usage_id = Some(id.to_string());
+        state.last_usage_tokens = 0;
+        state.incomplete = false;
+    } else if !state.incomplete {
+        let Some(total) = state.total_tokens.checked_sub(state.last_usage_tokens) else {
+            state.lossy = true;
+            return;
+        };
+        state.total_tokens = total;
+        state.last_usage_tokens = 0;
     }
+
     let n = [
         "input_tokens",
         "cache_creation_input_tokens",
@@ -284,10 +300,18 @@ fn apply_usage(id: Option<&str>, usage: &serde_json::Value, state: &mut Inventor
         "output_tokens",
     ]
     .iter()
-    .filter_map(|k| usage.get(k).and_then(|x| x.as_u64()))
-    .fold(0u64, u64::saturating_add);
-    state.total_tokens = state.total_tokens.saturating_add(n);
-    state.last_usage_id = Some(id.to_string());
+    .try_fold(0u64, |sum, k| sum.checked_add(usage.get(k)?.as_u64()?));
+    if let Some(n) = n {
+        if let Some(total) = state.total_tokens.checked_add(n) {
+            state.total_tokens = total;
+            state.last_usage_tokens = n;
+            state.incomplete = false;
+        } else {
+            state.lossy = true;
+        }
+    } else {
+        state.incomplete = true;
+    }
 }
 
 fn str_items<'a>(att: &'a serde_json::Value, key: &str) -> impl Iterator<Item = &'a str> {
@@ -350,7 +374,39 @@ mod tests {
     }
 
     #[test]
-    fn mcp_servers_from_tools_instructions_and_pending_dedup() {
+    fn loaded_inventory_is_scoped_to_its_transcript() {
+        let first = tmpfile("session-one");
+        let second = tmpfile("session-two");
+        std::fs::write(
+            &first,
+            format!(
+                "{}\n{}\n",
+                skill_listing(3, true),
+                tools_delta(&["mcp__one__query"], &[], &[])
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &second,
+            format!(
+                "{}\n{}\n",
+                skill_listing(1, true),
+                tools_delta(&["mcp__two__query", "mcp__three__query"], &[], &[])
+            ),
+        )
+        .unwrap();
+        let mut one = Inventory::default();
+        let mut two = Inventory::default();
+        scan(&first, &mut one, MAX_SCAN_BYTES).unwrap();
+        scan(&second, &mut two, MAX_SCAN_BYTES).unwrap();
+        assert_eq!((one.skill_count, one.mcp_count()), (Some(3), 1));
+        assert_eq!((two.skill_count, two.mcp_count()), (Some(1), 2));
+        let _ = std::fs::remove_file(first);
+        let _ = std::fs::remove_file(second);
+    }
+
+    #[test]
+    fn mcp_servers_from_loaded_tools_and_instructions_only() {
         let mut s = Inventory::default();
         apply_line(
             &tools_delta(
@@ -367,7 +423,9 @@ mod tests {
         );
         // chrome appears in instructions too — one server, not two.
         apply_line(&instr_delta(&["chrome"], &[]), &mut s);
-        assert_eq!(s.mcp_count(), 3, "chrome, codex, exa: {s:?}");
+        assert_eq!(s.mcp_count(), 2, "chrome and codex; exa is pending: {s:?}");
+        apply_line(&tools_delta(&["mcp__exa__query"], &[], &[]), &mut s);
+        assert_eq!(s.mcp_count(), 3, "exa counts after its schema loads");
     }
 
     #[test]
@@ -450,16 +508,57 @@ mod tests {
     }
 
     #[test]
-    fn first_record_for_an_id_wins() {
-        // A malformed or truncated repeat must not disturb the first
-        // record's contribution.
+    fn latest_complete_record_for_an_id_wins() {
+        // Local transcripts include revisions to output_tokens.
         let mut s = Inventory::default();
         apply_line(&usage_line("m1", 2, 100, 900, 10), &mut s);
+        apply_line(&usage_line("m1", 2, 100, 900, 40), &mut s);
+        assert_eq!(s.total_tokens, 1042);
+        assert!(!s.incomplete);
+    }
+
+    #[test]
+    fn incomplete_usage_hides_total_until_same_id_is_complete() {
+        let mut s = Inventory::default();
+        apply_line(&usage_line("m1", 1, 0, 0, 2), &mut s);
         apply_line(
-            r#"{"type":"assistant","message":{"id":"m1","role":"assistant","usage":{"output_tokens":40}}}"#,
+            r#"{"type":"assistant","message":{"id":"m2","role":"assistant","usage":{"input_tokens":100}}}"#,
             &mut s,
         );
-        assert_eq!(s.total_tokens, 1012);
+        assert_eq!(s.total_tokens, 3);
+        assert!(s.incomplete);
+        apply_line(&usage_line("m2", 100, 0, 0, 5), &mut s);
+        assert_eq!(s.total_tokens, 108);
+        assert!(!s.incomplete);
+        assert!(!s.lossy);
+    }
+
+    #[test]
+    fn explicit_zeros_are_complete_but_missing_field_is_not() {
+        let mut s = Inventory::default();
+        apply_line(&usage_line("m1", 100, 0, 0, 0), &mut s);
+        assert_eq!(s.total_tokens, 100);
+        assert!(!s.incomplete);
+        apply_line(
+            r#"{"type":"assistant","message":{"id":"m2","role":"assistant","usage":{"input_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#,
+            &mut s,
+        );
+        assert!(s.incomplete);
+        apply_line(&usage_line("m3", 1, 0, 0, 0), &mut s);
+        assert!(s.lossy, "a later id cannot repair m2");
+    }
+
+    #[test]
+    fn overflow_does_not_become_a_total() {
+        let mut s = Inventory::default();
+        apply_line(&usage_line("m1", u64::MAX, 0, 0, 0), &mut s);
+        apply_line(&usage_line("m2", 1, 0, 0, 0), &mut s);
+        assert!(s.lossy);
+        assert_eq!(s.total_tokens, u64::MAX);
+
+        let mut s = Inventory::default();
+        apply_line(&usage_line("m1", u64::MAX, 1, 0, 0), &mut s);
+        assert!(s.incomplete, "overflow within one usage is incomplete");
     }
 
     #[test]
@@ -470,6 +569,7 @@ mod tests {
             &mut s,
         );
         assert_eq!(s.total_tokens, 0, "no id, no dedup, no count");
+        assert!(s.lossy);
     }
 
     #[test]

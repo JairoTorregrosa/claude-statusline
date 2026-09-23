@@ -14,7 +14,7 @@ use crate::cache;
 pub struct Config {
     /// Line 4: loaded MCP server and skill counts for this session.
     pub inventory: bool,
-    /// Line 4: count of active sessions on this machine.
+    /// Line 4: count of recently written top-level session transcripts.
     pub sessions: bool,
 }
 
