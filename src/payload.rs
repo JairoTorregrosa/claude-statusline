@@ -1,17 +1,15 @@
 //! Typed model of the JSON Claude Code pipes to the statusline on stdin.
 //!
-//! Every field is optional: the docs guarantee several objects are absent or
-//! null depending on auth type, session phase, and version (`rate_limits`
-//! only for subscribers, `current_usage` null right after /compact, `pr`
-//! only while a PR is open, ...). A missing field must degrade the render,
-//! never abort it.
+//! Every modeled field tolerates absence. The statusline docs describe some
+//! optional and nullable fields, while this project cannot assume that every
+//! Claude Code version supplies every other field. Missing values must not
+//! abort the render.
 //!
 //! The payload carries more keys than this model. No struct sets
 //! `deny_unknown_fields`, so a key Claude Code adds is ignored instead of
 //! fatal, and a key this model drops keeps parsing. Each deliberate omission
 //! is declared at the struct that omits it. `docs/sample-payload.json` is
-//! the captured example of the shape; it is one session, so it carries no
-//! `transcript_path` and no `pr`.
+//! one captured example, without `transcript_path` or `pr`.
 
 use serde::{Deserialize, Deserializer};
 
@@ -50,8 +48,7 @@ pub struct Payload {
     // Not modeled: `session_id`, which no segment renders — the session is
     // identified by `session_name` and by its transcript path — and
     // `exceeds_200k_tokens`, a boolean against a fixed 200k that the ctx
-    // segment does not ask: it measures the auto-compact window, which a
-    // 1M session sets for itself.
+    // segment does not use for its window gauge.
 }
 
 #[derive(Deserialize, Default, Debug)]
@@ -112,9 +109,8 @@ pub struct ContextWindow {
     #[serde(deserialize_with = "lenient_u64")]
     pub context_window_size: Option<u64>,
     // Not modeled: `used_percentage`, `remaining_percentage`. Both measure
-    // against the model ceiling, while ctx measures the distance to
-    // auto-compact (`render::ctx_part`), so reading them would answer a
-    // question the segment does not ask. `current_usage` and
+    // against the model ceiling, while ctx may use a configured window
+    // (`render::ctx_part`). `current_usage` and
     // `total_output_tokens` answer no segment's question either.
 }
 
@@ -214,8 +210,7 @@ mod tests {
 
     #[test]
     fn null_fields_parse() {
-        // Claude Code sends explicit nulls. A null is an absent value, never
-        // a parse error that would blank every segment.
+        // Nullable fields must not blank every segment.
         let p: Payload = serde_json::from_str(
             r#"{"context_window": {"total_input_tokens": null,
                                    "context_window_size": null},
@@ -232,8 +227,7 @@ mod tests {
 
     #[test]
     fn unmodeled_keys_are_ignored() {
-        // The keys this model declines to carry still arrive on every real
-        // payload. They must parse and leave the modeled fields intact.
+        // Unmodeled keys may appear; they must leave modeled fields intact.
         let p: Payload = serde_json::from_str(
             r#"{"session_id": "00000000-0000-0000-0000-000000000000",
                 "workspace": {"current_dir": "/tmp/repo", "project_dir": "/tmp/other",

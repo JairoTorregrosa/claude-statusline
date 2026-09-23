@@ -21,45 +21,47 @@ numbers below match the image.
 | 4 | PR state | Shows `✓` approved, `✗` changes requested, `○` pending, `◌` draft. Click the number to open the pull request. |
 | 5 | Model | Shows the model of this session. |
 | 6 | Effort | Shows the reasoning effort. Effort changes cost and quality. The `⚡fast` and `¬think` badges appear when these modes differ from the default. |
-| 7 | Context | Shows the tokens in the context window and the auto-compact window. Shows `⚠compact` when compaction is near. |
+| 7 | Context | Shows reported input tokens and a window derived from the reported ceiling and settings when both are available. `⚠compact` warns near that displayed window; actual compaction can differ. |
 | 8 | Cost | Shows the session cost in USD. |
 | 9 | Session name | Identifies this session when many sessions run in parallel. A name longer than 36 characters truncates. |
 | 10 | Rate limits | Shows the 5-hour and the 7-day windows. The percentage shows the usage. The `↻` time shows when the window opens again. |
-| 11 | Tokens | Shows the total tokens of this session: fresh input, cache writes, cache reads, and output. |
+| 11 | Tokens | Sums fresh input, cache writes, cache reads, and output recorded in this session's transcript. |
 | 12 | Last commit | Shows the subject of `HEAD`. |
-| 13 | MCP count | Shows the number of MCP servers loaded in this session. Each connected server adds tool definitions to the context on each turn. |
-| 14 | Skill count | Shows the number of skills loaded in this session. Each skill description also uses context. |
-| 15 | Sessions | Shows the number of active Claude Code sessions on this machine. A session is active when its transcript received data in the last 60 seconds. |
+| 13 | MCP count | Counts servers with tools or instructions loaded in this session's transcript. |
+| 14 | Skill count | Shows the latest full skill listing in this session's transcript. |
+| 15 | Sessions | Counts top-level session transcripts written in the last 60 seconds on this machine. This is a recent-activity estimate. |
 
-Line 4 shows deviations only. The counts come from the transcript of this
-session, so they show the servers and the skills that the session loaded.
+Line 4 shows deviations only. MCP and skill counts come from this session's
+transcript; the session count is machine-wide. Pending MCP servers do not
+count until tools or instructions are loaded.
 A zero value does not render. The full line does not render when the counts
-are zero and one session is active.
+are zero and fewer than two recent session transcripts are found.
 
 ## Design
 
 The statusline renders from the JSON payload that Claude Code writes to
 stdin. The hot path starts no processes and makes no network calls.
 
-Git is the one external source. The statusline runs one
-`git status --porcelain=v2 --branch` call, at most one time each 4 seconds
-for each repository. Each repository has its own cache entry, so concurrent
-sessions do not contaminate each other.
+Git refresh runs `git status --porcelain=v2 --branch` and `git log -1` for
+the last commit subject, at most once each per 4 seconds per repository.
+Each repository has its own cache entry.
 
 The pull-request state, the repository identity, and the worktree name come
 from the payload. The statusline does not call `gh`.
 
 When `~/.claude/settings.json` is not valid JSON, the context segment
-measures against the model ceiling and shows a red `cfg!` marker. The
-statusline does not invent a default value.
+shows a red `cfg!` marker. If the payload omits `context_window_size`,
+the segment shows only its reported token count, without a denominator
+or percentage.
 
 The transcript scan is incremental. The statusline stores a byte offset for
 each session and reads only the new lines. One pass reads at most 4 MB, so a
 large backlog does not block a render. The scan catches up across renders.
 The same scan counts the loaded MCP servers and skills and sums the API
-usage records into the session token total. The token total renders once
-the scan has read the whole transcript — a partial sum never renders as a
-total. The session count is a directory walk with no process spawns.
+usage records into the session token total. The total renders only after
+the scan catches up and all four usage counters are available; repeated
+message IDs use their latest complete usage. The machine-wide session
+count is a directory walk with no process spawns.
 
 [DESIGN.md](DESIGN.md) lists the full design rules. [ROADMAP.md](ROADMAP.md)
 lists the known limits and the planned work.
