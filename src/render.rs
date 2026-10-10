@@ -30,9 +30,6 @@ pub struct External {
     pub inventory: Option<Inventory>,
     /// Active sessions on this machine. None when unavailable.
     pub active_sessions: Option<u64>,
-    /// How many of the listed skills are project skills. None when the
-    /// listing names are unknown or the split could not be verified.
-    pub local_skills: Option<u64>,
 }
 
 fn sep() -> String {
@@ -309,7 +306,7 @@ fn line4(ext: &External) -> String {
         if let Some(n) = inv.skill_count.filter(|&n| n > 0) {
             // The split renders only when it is a split of this total: the
             // names are the listing's and every local skill is among them.
-            let split = ext.local_skills.filter(|&l| {
+            let split = inv.skill_local.filter(|&l| {
                 l <= n
                     && inv
                         .skill_names
@@ -370,7 +367,6 @@ mod tests {
                 compact_limit: CompactLimit::Default,
                 inventory: None,
                 active_sessions: None,
-                local_skills: None,
             }
         }
     }
@@ -732,7 +728,6 @@ mod tests {
             compact_limit: CompactLimit::Configured(350_000),
             inventory: Some(inv),
             active_sessions: Some(3),
-            local_skills: None,
         };
         let out = render(&full_payload(), &ext);
         assert!(
@@ -766,11 +761,11 @@ mod tests {
         let mut inv = Inventory {
             skill_count: Some(52),
             skill_names: Some((0..52).map(|i| format!("s{i}")).collect()),
+            skill_local: Some(3),
             ..Inventory::default()
         };
         let ext = External {
             inventory: Some(inv.clone()),
-            local_skills: Some(3),
             ..External::default()
         };
         let out = render(&full_payload(), &ext);
@@ -785,7 +780,6 @@ mod tests {
         inv.skill_names = None;
         let ext = External {
             inventory: Some(inv),
-            local_skills: Some(3),
             ..External::default()
         };
         let out = render(&full_payload(), &ext);

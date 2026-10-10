@@ -54,7 +54,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::cache;
@@ -86,6 +86,12 @@ pub struct Inventory {
     /// read a state file without it as None and skip the rescan.
     #[serde(deserialize_with = "Option::deserialize")]
     pub skill_names: Option<Vec<String>>,
+    /// How many of `skill_names` are project skills, decided when the scan
+    /// read each listing and kept with it: a later edit on disk does not
+    /// move a loaded skill between local and global. None when the scope
+    /// could not be verified or the names are unknown.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub skill_local: Option<u64>,
     /// Live deferred `mcp__*` tool names (adds minus removes).
     pub mcp_tools: HashSet<String>,
     /// Server names from instruction deltas and pending-schema lists.
@@ -114,7 +120,21 @@ impl Inventory {
     }
 }
 
-pub fn collect(transcript: &Path) -> Option<Inventory> {
+/// Where the session runs, for deciding which listed skills are project
+/// skills. Read once per scan pass, not per render.
+#[derive(Default)]
+pub struct Scope {
+    pub cwd: Option<PathBuf>,
+    pub home: Option<PathBuf>,
+}
+
+impl Scope {
+    fn local_count(&self, names: &[String]) -> Option<u64> {
+        local_skill_count(names, self.cwd.as_deref()?, self.home.as_deref())
+    }
+}
+
+pub fn collect(transcript: &Path, scope: &Scope) -> Option<Inventory> {
     let state_path = cache::dir().join(format!(
         "inventory-{}.json",
         cache::key_hash(&transcript.to_string_lossy())
@@ -131,7 +151,7 @@ pub fn collect(transcript: &Path) -> Option<Inventory> {
         .and_then(|raw| serde_json::from_str::<Inventory>(&raw).ok())
         .unwrap_or_default();
 
-    scan(transcript, &mut state, MAX_SCAN_BYTES).ok()?;
+    scan_in(transcript, &mut state, MAX_SCAN_BYTES, scope).ok()?;
 
     if let Ok(raw) = serde_json::to_string(&state) {
         cache::write(&state_path, &raw);
@@ -139,7 +159,17 @@ pub fn collect(transcript: &Path) -> Option<Inventory> {
     Some(state)
 }
 
+#[cfg(test)]
 fn scan(path: &Path, state: &mut Inventory, max_bytes: usize) -> std::io::Result<()> {
+    scan_in(path, state, max_bytes, &Scope::default())
+}
+
+fn scan_in(
+    path: &Path,
+    state: &mut Inventory,
+    max_bytes: usize,
+    scope: &Scope,
+) -> std::io::Result<()> {
     let mut f = std::fs::File::open(path)?;
     let len = f.metadata()?.len();
     if state.offset > len {
@@ -176,7 +206,7 @@ fn scan(path: &Path, state: &mut Inventory, max_bytes: usize) -> std::io::Result
         Some(idx) => {
             let complete = idx + 1;
             for line in String::from_utf8_lossy(&chunk[..complete]).lines() {
-                apply_line(line, state);
+                apply_line_in(line, state, scope);
             }
             state.offset += complete as u64;
         }
@@ -233,7 +263,12 @@ fn interesting(line: &str) -> bool {
             && (line.contains(r#""reload-skills""#) || line.contains(r#""reload-plugins""#)))
 }
 
+#[cfg(test)]
 fn apply_line(line: &str, state: &mut Inventory) {
+    apply_line_in(line, state, &Scope::default());
+}
+
+fn apply_line_in(line: &str, state: &mut Inventory, scope: &Scope) {
     if !interesting(line) {
         return;
     }
@@ -256,8 +291,6 @@ fn apply_line(line: &str, state: &mut Inventory) {
     };
     match att.get("type").and_then(|t| t.as_str()) {
         Some("skill_listing") => {
-            // Only full listings carry the whole inventory; partial updates
-            // list changed entries and must not overwrite the count.
             let names: Option<Vec<String>> = att
                 .get("names")
                 .and_then(|v| v.as_array())
@@ -266,21 +299,32 @@ fn apply_line(line: &str, state: &mut Inventory) {
                 if let Some(n) = att.get("skillCount").and_then(|n| n.as_u64()) {
                     state.skill_count = Some(n);
                     state.skill_names = names.filter(|v| v.len() as u64 == n);
+                    state.skill_local = state
+                        .skill_names
+                        .as_deref()
+                        .and_then(|v| scope.local_count(v));
                 }
             } else {
                 // A partial listing adds to a known set. Without the set,
                 // the overlap is unknowable and so is the total.
                 match (state.skill_names.as_mut(), names) {
                     (Some(known), Some(added)) => {
+                        let mut new: Vec<String> = Vec::new();
                         for name in added {
-                            if !known.contains(&name) {
-                                known.push(name);
+                            if !known.contains(&name) && !new.contains(&name) {
+                                new.push(name);
                             }
                         }
+                        state.skill_local = state
+                            .skill_local
+                            .zip(scope.local_count(&new))
+                            .map(|(a, b)| a + b);
+                        known.extend(new);
                         state.skill_count = Some(known.len() as u64);
                     }
                     _ => {
                         state.skill_names = None;
+                        state.skill_local = None;
                         state.skill_count = None;
                     }
                 }
@@ -324,6 +368,7 @@ fn apply_reload(v: &serde_json::Value, state: &mut Inventory) {
     match command {
         Some("reload-skills") => {
             state.skill_names = None;
+            state.skill_local = None;
             state.skill_count = v
                 .get("content")
                 .and_then(|c| c.as_str())
@@ -331,6 +376,7 @@ fn apply_reload(v: &serde_json::Value, state: &mut Inventory) {
         }
         Some("reload-plugins") => {
             state.skill_names = None;
+            state.skill_local = None;
             state.skill_count = None;
         }
         _ => {}
@@ -357,7 +403,7 @@ fn reloaded_skill_count(content: &str) -> Option<u64> {
 ///
 /// None when a project settings file exists but does not parse, or a name
 /// is not a plain path segment: the split cannot be verified.
-pub fn local_skill_count(names: &[String], cwd: &Path, home: Option<&Path>) -> Option<u64> {
+fn local_skill_count(names: &[String], cwd: &Path, home: Option<&Path>) -> Option<u64> {
     let roots: Vec<&Path> = cwd.ancestors().take_while(|d| Some(*d) != home).collect();
 
     let mut project_plugins: Vec<String> = Vec::new();
@@ -620,6 +666,69 @@ mod tests {
     }
 
     #[test]
+    fn split_is_kept_from_when_the_listing_was_read() {
+        let base = tmpfile("snapshot");
+        let home = base.join("home");
+        let proj = home.join("proj");
+        let d = proj.join(".claude").join("skills").join("deploy");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("SKILL.md"), "x").unwrap();
+        let scope = Scope {
+            cwd: Some(proj.clone()),
+            home: Some(home.clone()),
+        };
+        let t = base.join("t.jsonl");
+        std::fs::write(&t, format!("{}\n", named_listing(&["deploy", "loop"]))).unwrap();
+
+        let mut s = Inventory::default();
+        scan_in(&t, &mut s, MAX_SCAN_BYTES, &scope).unwrap();
+        assert_eq!(s.skill_local, Some(1));
+
+        // The skill file goes away while the session still has it loaded.
+        std::fs::remove_dir_all(&d).unwrap();
+        let mut f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
+        writeln!(f, "{}", reload("model", "Set model")).unwrap();
+        scan_in(&t, &mut s, MAX_SCAN_BYTES, &scope).unwrap();
+        assert_eq!(
+            s.skill_local,
+            Some(1),
+            "a disk edit must not move a loaded skill"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn partial_listing_adds_local_skills_of_new_names_only() {
+        let base = tmpfile("partial-scope");
+        let home = base.join("home");
+        let proj = home.join("proj");
+        for n in ["deploy", "lint"] {
+            let d = proj.join(".claude").join("skills").join(n);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("SKILL.md"), "x").unwrap();
+        }
+        let scope = Scope {
+            cwd: Some(proj),
+            home: Some(home),
+        };
+        let mut s = Inventory::default();
+        apply_line_in(&named_listing(&["deploy", "loop"]), &mut s, &scope);
+        let partial = r#"{"type":"attachment","attachment":{"type":"skill_listing","isInitial":false,"skillCount":2,"names":["deploy","lint"]}}"#;
+        apply_line_in(partial, &mut s, &scope);
+        assert_eq!(s.skill_count, Some(3));
+        assert_eq!(s.skill_local, Some(2), "deploy repeats; only lint is new");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn listing_without_scope_has_no_split() {
+        let mut s = Inventory::default();
+        apply_line(&named_listing(&["a"]), &mut s);
+        assert_eq!(s.skill_count, Some(1));
+        assert_eq!(s.skill_local, None);
+    }
+
+    #[test]
     fn path_like_skill_name_makes_split_unknown() {
         let names = vec!["../escape".to_string()];
         assert_eq!(local_skill_count(&names, Path::new("/tmp"), None), None);
@@ -698,6 +807,8 @@ mod tests {
         // A state file from before `skill_names` must fail, or the names
         // never arrive for a transcript already scanned to its end.
         let prior = r#"{"offset":9,"skipping":false,"caught_up":true,"lossy":false,"skill_count":3,"mcp_tools":[],"mcp_servers":[],"total_tokens":7,"last_usage_id":null}"#;
+        assert!(serde_json::from_str::<Inventory>(prior).is_err());
+        let prior = r#"{"offset":9,"skipping":false,"caught_up":true,"lossy":false,"skill_count":3,"skill_names":["a"],"mcp_tools":[],"mcp_servers":[],"total_tokens":7,"last_usage_id":null}"#;
         assert!(serde_json::from_str::<Inventory>(prior).is_err());
     }
 

@@ -40,25 +40,21 @@ fn main() {
     let inventory = cfg
         .inventory
         .then(|| {
-            p.transcript_path
-                .as_deref()
-                .and_then(|t| inventory::collect(Path::new(t)))
+            p.transcript_path.as_deref().and_then(|t| {
+                let scope = inventory::Scope {
+                    cwd: p.cwd().map(Into::into),
+                    home: cache::home_dir(),
+                };
+                inventory::collect(Path::new(t), &scope)
+            })
         })
         .flatten()
         .filter(|inv| !inv.is_empty());
-    let local_skills = inventory
-        .as_ref()
-        .and_then(|inv| inv.skill_names.as_deref())
-        .zip(p.cwd())
-        .and_then(|(names, cwd)| {
-            inventory::local_skill_count(names, Path::new(cwd), cache::home_dir().as_deref())
-        });
     let ext = render::External {
         git: p.cwd().and_then(|c| git::collect(Path::new(c))),
         compact_limit: settings::compact_limit(),
         inventory,
         active_sessions: cfg.sessions.then(sessions::active_count).flatten(),
-        local_skills,
     };
     print!("{}", render::render(&p, &ext));
 }
