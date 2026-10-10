@@ -30,6 +30,9 @@ pub struct External {
     pub inventory: Option<Inventory>,
     /// Active sessions on this machine. None when unavailable.
     pub active_sessions: Option<u64>,
+    /// How many of the listed skills are project skills. None when the
+    /// listing names are unknown or the split could not be verified.
+    pub local_skills: Option<u64>,
 }
 
 fn sep() -> String {
@@ -304,7 +307,22 @@ fn line4(ext: &External) -> String {
             parts.push(format!("{GRAY}mcp:{RST}{BLUE}{mcp}{RST}"));
         }
         if let Some(n) = inv.skill_count.filter(|&n| n > 0) {
-            parts.push(format!("{GRAY}skills:{RST}{LAVENDER}{n}{RST}"));
+            // The split renders only when it is a split of this total: the
+            // names are the listing's and every local skill is among them.
+            let split = ext.local_skills.filter(|&l| {
+                l <= n
+                    && inv
+                        .skill_names
+                        .as_ref()
+                        .is_some_and(|v| v.len() as u64 == n)
+            });
+            match split {
+                Some(l) => parts.push(format!(
+                    "{GRAY}skills:{RST}{LAVENDER}{l}{RST} {GRAY}local ·{RST} {LAVENDER}{}{RST} {GRAY}global{RST}",
+                    n - l
+                )),
+                None => parts.push(format!("{GRAY}skills:{RST}{LAVENDER}{n}{RST}")),
+            }
         }
     }
 
@@ -352,6 +370,7 @@ mod tests {
                 compact_limit: CompactLimit::Default,
                 inventory: None,
                 active_sessions: None,
+                local_skills: None,
             }
         }
     }
@@ -713,6 +732,7 @@ mod tests {
             compact_limit: CompactLimit::Configured(350_000),
             inventory: Some(inv),
             active_sessions: Some(3),
+            local_skills: None,
         };
         let out = render(&full_payload(), &ext);
         assert!(
@@ -739,6 +759,41 @@ mod tests {
             ..Default::default()
         };
         assert!(!render(&full_payload(), &ext).contains("sessions:"));
+    }
+
+    #[test]
+    fn skills_split_into_local_and_global() {
+        let mut inv = Inventory {
+            skill_count: Some(52),
+            skill_names: Some((0..52).map(|i| format!("s{i}")).collect()),
+            ..Inventory::default()
+        };
+        let ext = External {
+            inventory: Some(inv.clone()),
+            local_skills: Some(3),
+            ..External::default()
+        };
+        let out = render(&full_payload(), &ext);
+        assert!(
+            out.contains(&format!(
+                "{GRAY}skills:{RST}{LAVENDER}3{RST} {GRAY}local ·{RST} {LAVENDER}49{RST} {GRAY}global{RST}"
+            )),
+            "{out}"
+        );
+
+        // After a reload the names are gone: the total renders alone.
+        inv.skill_names = None;
+        let ext = External {
+            inventory: Some(inv),
+            local_skills: Some(3),
+            ..External::default()
+        };
+        let out = render(&full_payload(), &ext);
+        assert!(
+            out.contains(&format!("{GRAY}skills:{RST}{LAVENDER}52{RST}")),
+            "{out}"
+        );
+        assert!(!out.contains("global"), "{out}");
     }
 
     #[test]
