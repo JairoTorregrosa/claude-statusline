@@ -399,7 +399,9 @@ fn reloaded_skill_count(content: &str) -> Option<u64> {
 /// directory under `.claude/skills` in `cwd` or an ancestor below `home`,
 /// or a plugin skill whose plugin is enabled in that project's
 /// `.claude/settings.json` or `.claude/settings.local.json`. Everything
-/// else is global (user, plugin at user scope, synced, bundled).
+/// else is global (user, plugin at user scope, synced, bundled). A name
+/// that also exists in `~/.claude/skills` is global: the user skill takes
+/// precedence over the project one, so that is the one loaded.
 ///
 /// None when a project settings file exists but does not parse, or a name
 /// is not a plain path segment: the split cannot be verified.
@@ -434,13 +436,14 @@ fn local_skill_count(names: &[String], cwd: &Path, home: Option<&Path>) -> Optio
                 if name.is_empty() || name.contains(['/', '\\']) || name == "." || name == ".." {
                     return None;
                 }
-                roots.iter().any(|r| {
+                let has_skill = |r: &Path| {
                     r.join(".claude")
                         .join("skills")
                         .join(name)
                         .join("SKILL.md")
                         .is_file()
-                })
+                };
+                !home.is_some_and(has_skill) && roots.iter().any(|r| has_skill(r))
             }
         };
         if is_local {
@@ -655,6 +658,13 @@ mod tests {
         .collect();
 
         assert_eq!(local_skill_count(&names, &sub, Some(&home)), Some(2));
+
+        skill(&home, "deploy");
+        assert_eq!(
+            local_skill_count(&names, &sub, Some(&home)),
+            Some(1),
+            "a user skill with the same name wins over the project one"
+        );
 
         std::fs::write(proj.join(".claude").join("settings.json"), "{broken").unwrap();
         assert_eq!(
