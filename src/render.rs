@@ -304,7 +304,22 @@ fn line4(ext: &External) -> String {
             parts.push(format!("{GRAY}mcp:{RST}{BLUE}{mcp}{RST}"));
         }
         if let Some(n) = inv.skill_count.filter(|&n| n > 0) {
-            parts.push(format!("{GRAY}skills:{RST}{LAVENDER}{n}{RST}"));
+            // The split renders only when it is a split of this total: the
+            // names are the listing's and every local skill is among them.
+            let split = inv.skill_local.filter(|&l| {
+                l <= n
+                    && inv
+                        .skill_names
+                        .as_ref()
+                        .is_some_and(|v| v.len() as u64 == n)
+            });
+            match split {
+                Some(l) => parts.push(format!(
+                    "{GRAY}skills:{RST}{LAVENDER}{l}{RST} {GRAY}local ·{RST} {LAVENDER}{}{RST} {GRAY}global{RST}",
+                    n - l
+                )),
+                None => parts.push(format!("{GRAY}skills:{RST}{LAVENDER}{n}{RST}")),
+            }
         }
     }
 
@@ -739,6 +754,40 @@ mod tests {
             ..Default::default()
         };
         assert!(!render(&full_payload(), &ext).contains("sessions:"));
+    }
+
+    #[test]
+    fn skills_split_into_local_and_global() {
+        let mut inv = Inventory {
+            skill_count: Some(52),
+            skill_names: Some((0..52).map(|i| format!("s{i}")).collect()),
+            skill_local: Some(3),
+            ..Inventory::default()
+        };
+        let ext = External {
+            inventory: Some(inv.clone()),
+            ..External::default()
+        };
+        let out = render(&full_payload(), &ext);
+        assert!(
+            out.contains(&format!(
+                "{GRAY}skills:{RST}{LAVENDER}3{RST} {GRAY}local ·{RST} {LAVENDER}49{RST} {GRAY}global{RST}"
+            )),
+            "{out}"
+        );
+
+        // After a reload the names are gone: the total renders alone.
+        inv.skill_names = None;
+        let ext = External {
+            inventory: Some(inv),
+            ..External::default()
+        };
+        let out = render(&full_payload(), &ext);
+        assert!(
+            out.contains(&format!("{GRAY}skills:{RST}{LAVENDER}52{RST}")),
+            "{out}"
+        );
+        assert!(!out.contains("global"), "{out}");
     }
 
     #[test]

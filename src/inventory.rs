@@ -26,8 +26,17 @@
 //!
 //! Sources (attachment records in the transcript JSONL):
 //! - `skill_listing` with `isInitial: true` → full listing; `skillCount`
-//!   is the loaded-skill count. Later full listings override earlier ones
-//!   (plugin reloads change the inventory mid-session).
+//!   is the loaded-skill count and `names` the loaded skills. Later full
+//!   listings override earlier ones. A listing without `isInitial` lists
+//!   skills that became available mid-session (synced skills arrive this
+//!   way); measured over local transcripts, some of its names repeat the
+//!   full listing and some are new, so it is merged as a set union.
+//! - `system` records with `subtype: "local_command"` for `/reload-skills`
+//!   and `/reload-plugins`. Neither writes a new listing. `/reload-skills`
+//!   prints the new total ("Reloaded skills: N skills available"), which
+//!   replaces the count; the names are then unknown. `/reload-plugins`
+//!   prints only the plugin share, so the count becomes unknown and the
+//!   segment hides until the next full listing or `/reload-skills`.
 //! - `deferred_tools_delta` → `addedNames`/`readdedNames`/`removedNames`
 //!   applied in order; `mcp__<server>__<tool>` names yield the loaded
 //!   server set. `pendingMcpServers` names servers awaiting schemas.
@@ -45,7 +54,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::cache;
@@ -67,8 +76,22 @@ pub struct Inventory {
     /// A discarded oversized line classified as relevant: the token total
     /// is a lower bound, not a total, and must not render.
     pub lossy: bool,
-    /// Latest full-listing skill count. None until a listing is seen.
+    /// Latest full-listing skill count. None until a listing is seen, and
+    /// None again after a reload that leaves the total unknown.
     pub skill_count: Option<u64>,
+    /// Loaded skill names: the latest full listing plus the partial
+    /// listings after it. None when a listing's names do not match its
+    /// count, or after a reload (the new set is not in the transcript).
+    /// `deserialize_with` makes the key required: serde would otherwise
+    /// read a state file without it as None and skip the rescan.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub skill_names: Option<Vec<String>>,
+    /// How many of `skill_names` are project skills, decided when the scan
+    /// read each listing and kept with it: a later edit on disk does not
+    /// move a loaded skill between local and global. None when the scope
+    /// could not be verified or the names are unknown.
+    #[serde(deserialize_with = "Option::deserialize")]
+    pub skill_local: Option<u64>,
     /// Live deferred `mcp__*` tool names (adds minus removes).
     pub mcp_tools: HashSet<String>,
     /// Server names from instruction deltas and pending-schema lists.
@@ -97,7 +120,21 @@ impl Inventory {
     }
 }
 
-pub fn collect(transcript: &Path) -> Option<Inventory> {
+/// Where the session runs, for deciding which listed skills are project
+/// skills. Read once per scan pass, not per render.
+#[derive(Default)]
+pub struct Scope {
+    pub cwd: Option<PathBuf>,
+    pub home: Option<PathBuf>,
+}
+
+impl Scope {
+    fn local_count(&self, names: &[String]) -> Option<u64> {
+        local_skill_count(names, self.cwd.as_deref()?, self.home.as_deref())
+    }
+}
+
+pub fn collect(transcript: &Path, scope: &Scope) -> Option<Inventory> {
     let state_path = cache::dir().join(format!(
         "inventory-{}.json",
         cache::key_hash(&transcript.to_string_lossy())
@@ -114,7 +151,7 @@ pub fn collect(transcript: &Path) -> Option<Inventory> {
         .and_then(|raw| serde_json::from_str::<Inventory>(&raw).ok())
         .unwrap_or_default();
 
-    scan(transcript, &mut state, MAX_SCAN_BYTES).ok()?;
+    scan_in(transcript, &mut state, MAX_SCAN_BYTES, scope).ok()?;
 
     if let Ok(raw) = serde_json::to_string(&state) {
         cache::write(&state_path, &raw);
@@ -122,7 +159,17 @@ pub fn collect(transcript: &Path) -> Option<Inventory> {
     Some(state)
 }
 
+#[cfg(test)]
 fn scan(path: &Path, state: &mut Inventory, max_bytes: usize) -> std::io::Result<()> {
+    scan_in(path, state, max_bytes, &Scope::default())
+}
+
+fn scan_in(
+    path: &Path,
+    state: &mut Inventory,
+    max_bytes: usize,
+    scope: &Scope,
+) -> std::io::Result<()> {
     let mut f = std::fs::File::open(path)?;
     let len = f.metadata()?.len();
     if state.offset > len {
@@ -159,7 +206,7 @@ fn scan(path: &Path, state: &mut Inventory, max_bytes: usize) -> std::io::Result
         Some(idx) => {
             let complete = idx + 1;
             for line in String::from_utf8_lossy(&chunk[..complete]).lines() {
-                apply_line(line, state);
+                apply_line_in(line, state, scope);
             }
             state.offset += complete as u64;
         }
@@ -212,9 +259,16 @@ fn interesting(line: &str) -> bool {
             && (line.contains("skill_listing")
                 || line.contains("deferred_tools_delta")
                 || line.contains("mcp_instructions_delta")))
+        || (head_contains(line, br#""subtype":"local_command""#)
+            && (line.contains(r#""reload-skills""#) || line.contains(r#""reload-plugins""#)))
 }
 
+#[cfg(test)]
 fn apply_line(line: &str, state: &mut Inventory) {
+    apply_line_in(line, state, &Scope::default());
+}
+
+fn apply_line_in(line: &str, state: &mut Inventory, scope: &Scope) {
     if !interesting(line) {
         return;
     }
@@ -228,17 +282,52 @@ fn apply_line(line: &str, state: &mut Inventory) {
         apply_usage(msg.get("id").and_then(|i| i.as_str()), usage, state);
         return;
     }
+    if v.get("subtype").and_then(|t| t.as_str()) == Some("local_command") {
+        apply_reload(&v, state);
+        return;
+    }
     let Some(att) = v.get("attachment") else {
         return;
     };
     match att.get("type").and_then(|t| t.as_str()) {
         Some("skill_listing") => {
-            // Only full listings carry the whole inventory; partial updates
-            // list changed entries and must not overwrite the count.
-            if att.get("isInitial").and_then(|b| b.as_bool()) == Some(true)
-                && let Some(n) = att.get("skillCount").and_then(|n| n.as_u64())
-            {
-                state.skill_count = Some(n);
+            let names: Option<Vec<String>> = att
+                .get("names")
+                .and_then(|v| v.as_array())
+                .map(|_| str_items(att, "names").map(str::to_string).collect());
+            if att.get("isInitial").and_then(|b| b.as_bool()) == Some(true) {
+                if let Some(n) = att.get("skillCount").and_then(|n| n.as_u64()) {
+                    state.skill_count = Some(n);
+                    state.skill_names = names.filter(|v| v.len() as u64 == n);
+                    state.skill_local = state
+                        .skill_names
+                        .as_deref()
+                        .and_then(|v| scope.local_count(v));
+                }
+            } else {
+                // A partial listing adds to a known set. Without the set,
+                // the overlap is unknowable and so is the total.
+                match (state.skill_names.as_mut(), names) {
+                    (Some(known), Some(added)) => {
+                        let mut new: Vec<String> = Vec::new();
+                        for name in added {
+                            if !known.contains(&name) && !new.contains(&name) {
+                                new.push(name);
+                            }
+                        }
+                        state.skill_local = state
+                            .skill_local
+                            .zip(scope.local_count(&new))
+                            .map(|(a, b)| a + b);
+                        known.extend(new);
+                        state.skill_count = Some(known.len() as u64);
+                    }
+                    _ => {
+                        state.skill_names = None;
+                        state.skill_local = None;
+                        state.skill_count = None;
+                    }
+                }
             }
         }
         Some("deferred_tools_delta") => {
@@ -266,6 +355,102 @@ fn apply_line(line: &str, state: &mut Inventory) {
         }
         _ => {}
     }
+}
+
+/// `/reload-skills` and `/reload-plugins` change the loaded skills
+/// without writing a listing. Whatever the reload prints, the old names no
+/// longer describe the session.
+fn apply_reload(v: &serde_json::Value, state: &mut Inventory) {
+    let command = v
+        .get("commandRun")
+        .and_then(|c| c.get("command"))
+        .and_then(|c| c.as_str());
+    match command {
+        Some("reload-skills") => {
+            state.skill_names = None;
+            state.skill_local = None;
+            state.skill_count = v
+                .get("content")
+                .and_then(|c| c.as_str())
+                .and_then(reloaded_skill_count);
+        }
+        Some("reload-plugins") => {
+            state.skill_names = None;
+            state.skill_local = None;
+            state.skill_count = None;
+        }
+        _ => {}
+    }
+}
+
+/// "…Reloaded skills: 52 skills available (12 removed)…" → 52. Any other
+/// text is None: an unrecognized message leaves the count unknown.
+fn reloaded_skill_count(content: &str) -> Option<u64> {
+    let rest = content.split("Reloaded skills: ").nth(1)?;
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let after = &rest[digits.len()..];
+    if !after.starts_with(" skills available") && !after.starts_with(" skill available") {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// How many of `names` are project skills for a session in `cwd`: a skill
+/// directory under `.claude/skills` in `cwd` or an ancestor below `home`,
+/// or a plugin skill whose plugin is enabled in that project's
+/// `.claude/settings.json` or `.claude/settings.local.json`. Everything
+/// else is global (user, plugin at user scope, synced, bundled). A name
+/// that also exists in `~/.claude/skills` is global: the user skill takes
+/// precedence over the project one, so that is the one loaded.
+///
+/// None when a project settings file exists but does not parse, or a name
+/// is not a plain path segment: the split cannot be verified.
+fn local_skill_count(names: &[String], cwd: &Path, home: Option<&Path>) -> Option<u64> {
+    let roots: Vec<&Path> = cwd.ancestors().take_while(|d| Some(*d) != home).collect();
+
+    let mut project_plugins: Vec<String> = Vec::new();
+    for root in &roots {
+        for file in ["settings.json", "settings.local.json"] {
+            let path = root.join(".claude").join(file);
+            let Ok(raw) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+            if let Some(map) = v.get("enabledPlugins").and_then(|m| m.as_object()) {
+                for (key, on) in map {
+                    if on.as_bool() == Some(true)
+                        && let Some((plugin, _)) = key.split_once('@')
+                    {
+                        project_plugins.push(plugin.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    let mut local = 0u64;
+    for name in names {
+        let is_local = match name.split_once(':') {
+            Some((plugin, _)) => project_plugins.iter().any(|p| p == plugin),
+            None => {
+                if name.is_empty() || name.contains(['/', '\\']) || name == "." || name == ".." {
+                    return None;
+                }
+                let has_skill = |r: &Path| {
+                    r.join(".claude")
+                        .join("skills")
+                        .join(name)
+                        .join("SKILL.md")
+                        .is_file()
+                };
+                !home.is_some_and(has_skill) && roots.iter().any(|r| has_skill(r))
+            }
+        };
+        if is_local {
+            local += 1;
+        }
+    }
+    Some(local)
 }
 
 fn apply_usage(id: Option<&str>, usage: &serde_json::Value, state: &mut Inventory) {
@@ -343,10 +528,220 @@ mod tests {
     fn latest_full_skill_listing_wins() {
         let mut s = Inventory::default();
         apply_line(&skill_listing(65, true), &mut s);
-        apply_line(&skill_listing(15, false), &mut s); // partial update: ignored
         assert_eq!(s.skill_count, Some(65));
-        apply_line(&skill_listing(56, true), &mut s); // plugin reload
+        apply_line(&skill_listing(56, true), &mut s);
         assert_eq!(s.skill_count, Some(56));
+    }
+
+    #[test]
+    fn partial_listing_merges_into_known_names() {
+        let mut s = Inventory::default();
+        apply_line(&named_listing(&["a", "b"]), &mut s);
+        let partial = |names: &[&str]| {
+            format!(
+                r#"{{"type":"attachment","attachment":{{"type":"skill_listing","isInitial":false,"skillCount":{},"names":{}}}}}"#,
+                names.len(),
+                serde_json::to_string(names).unwrap()
+            )
+        };
+        apply_line(&partial(&["b", "c"]), &mut s); // b repeats, c is new
+        assert_eq!(s.skill_count, Some(3));
+
+        // Without known names the overlap is unknowable.
+        apply_line(&skill_listing(65, true), &mut s); // names [] != 65
+        assert_eq!(s.skill_names, None);
+        apply_line(&partial(&["d"]), &mut s);
+        assert_eq!(s.skill_count, None, "65 + 1 would be a guess");
+    }
+
+    fn reload(command: &str, stdout: &str) -> String {
+        format!(
+            r#"{{"type":"system","subtype":"local_command","content":"<local-command-stdout>{stdout}</local-command-stdout>","level":"info","commandRun":{{"command":"{command}","args":""}}}}"#
+        )
+    }
+
+    fn named_listing(names: &[&str]) -> String {
+        format!(
+            r#"{{"type":"attachment","attachment":{{"type":"skill_listing","isInitial":true,"skillCount":{},"names":{}}}}}"#,
+            names.len(),
+            serde_json::to_string(names).unwrap()
+        )
+    }
+
+    #[test]
+    fn full_listing_keeps_names() {
+        let mut s = Inventory::default();
+        apply_line(&named_listing(&["a", "p:b"]), &mut s);
+        assert_eq!(s.skill_count, Some(2));
+        assert_eq!(s.skill_names, Some(vec!["a".into(), "p:b".into()]));
+    }
+
+    #[test]
+    fn reload_skills_replaces_count_and_drops_names() {
+        let mut s = Inventory::default();
+        apply_line(&named_listing(&["a", "b", "c"]), &mut s);
+        apply_line(
+            &reload(
+                "reload-skills",
+                "Reloaded skills: 52 skills available (12 removed)",
+            ),
+            &mut s,
+        );
+        assert_eq!(s.skill_count, Some(52));
+        assert_eq!(
+            s.skill_names, None,
+            "the new names are not in the transcript"
+        );
+    }
+
+    #[test]
+    fn unrecognized_reload_output_leaves_count_unknown() {
+        let mut s = Inventory::default();
+        apply_line(&named_listing(&["a"]), &mut s);
+        apply_line(&reload("reload-skills", "Skills recargadas: 40"), &mut s);
+        assert_eq!(s.skill_count, None, "a stale 1 must not survive a reload");
+    }
+
+    #[test]
+    fn reload_plugins_makes_count_unknown_until_next_listing() {
+        let mut s = Inventory::default();
+        apply_line(&named_listing(&["a", "p:b"]), &mut s);
+        apply_line(
+            &reload(
+                "reload-plugins",
+                "Reloaded: 4 plugins · 24 skills · 10 agents",
+            ),
+            &mut s,
+        );
+        assert_eq!(s.skill_count, None);
+        apply_line(&named_listing(&["a"]), &mut s);
+        assert_eq!(s.skill_count, Some(1));
+    }
+
+    #[test]
+    fn other_local_commands_are_ignored() {
+        let mut s = Inventory::default();
+        apply_line(&named_listing(&["a"]), &mut s);
+        apply_line(&reload("model", "Set model to reload-skills"), &mut s);
+        assert_eq!(s.skill_count, Some(1));
+    }
+
+    #[test]
+    fn local_skills_are_project_dirs_and_project_plugins() {
+        let base = tmpfile("scope");
+        let home = base.join("home");
+        let proj = home.join("code").join("proj");
+        let sub = proj.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let skill = |root: &Path, n: &str| {
+            let d = root.join(".claude").join("skills").join(n);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("SKILL.md"), "---\nname: x\n---\n").unwrap();
+        };
+        skill(&proj, "deploy");
+        skill(&home, "global-one"); // ~/.claude/skills is user scope
+        std::fs::write(
+            proj.join(".claude").join("settings.local.json"),
+            r#"{"enabledPlugins":{"team@corp":true,"off@corp":false}}"#,
+        )
+        .unwrap();
+        let names: Vec<String> = [
+            "deploy",
+            "global-one",
+            "team:lint",
+            "off:x",
+            "jai:y",
+            "loop",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        assert_eq!(local_skill_count(&names, &sub, Some(&home)), Some(2));
+
+        skill(&home, "deploy");
+        assert_eq!(
+            local_skill_count(&names, &sub, Some(&home)),
+            Some(1),
+            "a user skill with the same name wins over the project one"
+        );
+
+        std::fs::write(proj.join(".claude").join("settings.json"), "{broken").unwrap();
+        assert_eq!(
+            local_skill_count(&names, &sub, Some(&home)),
+            None,
+            "an unreadable project settings file makes the split unverifiable"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn split_is_kept_from_when_the_listing_was_read() {
+        let base = tmpfile("snapshot");
+        let home = base.join("home");
+        let proj = home.join("proj");
+        let d = proj.join(".claude").join("skills").join("deploy");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("SKILL.md"), "x").unwrap();
+        let scope = Scope {
+            cwd: Some(proj.clone()),
+            home: Some(home.clone()),
+        };
+        let t = base.join("t.jsonl");
+        std::fs::write(&t, format!("{}\n", named_listing(&["deploy", "loop"]))).unwrap();
+
+        let mut s = Inventory::default();
+        scan_in(&t, &mut s, MAX_SCAN_BYTES, &scope).unwrap();
+        assert_eq!(s.skill_local, Some(1));
+
+        // The skill file goes away while the session still has it loaded.
+        std::fs::remove_dir_all(&d).unwrap();
+        let mut f = std::fs::OpenOptions::new().append(true).open(&t).unwrap();
+        writeln!(f, "{}", reload("model", "Set model")).unwrap();
+        scan_in(&t, &mut s, MAX_SCAN_BYTES, &scope).unwrap();
+        assert_eq!(
+            s.skill_local,
+            Some(1),
+            "a disk edit must not move a loaded skill"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn partial_listing_adds_local_skills_of_new_names_only() {
+        let base = tmpfile("partial-scope");
+        let home = base.join("home");
+        let proj = home.join("proj");
+        for n in ["deploy", "lint"] {
+            let d = proj.join(".claude").join("skills").join(n);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("SKILL.md"), "x").unwrap();
+        }
+        let scope = Scope {
+            cwd: Some(proj),
+            home: Some(home),
+        };
+        let mut s = Inventory::default();
+        apply_line_in(&named_listing(&["deploy", "loop"]), &mut s, &scope);
+        let partial = r#"{"type":"attachment","attachment":{"type":"skill_listing","isInitial":false,"skillCount":2,"names":["deploy","lint"]}}"#;
+        apply_line_in(partial, &mut s, &scope);
+        assert_eq!(s.skill_count, Some(3));
+        assert_eq!(s.skill_local, Some(2), "deploy repeats; only lint is new");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn listing_without_scope_has_no_split() {
+        let mut s = Inventory::default();
+        apply_line(&named_listing(&["a"]), &mut s);
+        assert_eq!(s.skill_count, Some(1));
+        assert_eq!(s.skill_local, None);
+    }
+
+    #[test]
+    fn path_like_skill_name_makes_split_unknown() {
+        let names = vec!["../escape".to_string()];
+        assert_eq!(local_skill_count(&names, Path::new("/tmp"), None), None);
     }
 
     #[test]
@@ -418,6 +813,12 @@ mod tests {
         // The immediate predecessor schema (token fields, no scan flags)
         // must fail too.
         let prior = r#"{"offset":9,"skill_count":3,"mcp_tools":[],"mcp_servers":[],"total_tokens":7,"last_usage":["m1",7]}"#;
+        assert!(serde_json::from_str::<Inventory>(prior).is_err());
+        // A state file from before `skill_names` must fail, or the names
+        // never arrive for a transcript already scanned to its end.
+        let prior = r#"{"offset":9,"skipping":false,"caught_up":true,"lossy":false,"skill_count":3,"mcp_tools":[],"mcp_servers":[],"total_tokens":7,"last_usage_id":null}"#;
+        assert!(serde_json::from_str::<Inventory>(prior).is_err());
+        let prior = r#"{"offset":9,"skipping":false,"caught_up":true,"lossy":false,"skill_count":3,"skill_names":["a"],"mcp_tools":[],"mcp_servers":[],"total_tokens":7,"last_usage_id":null}"#;
         assert!(serde_json::from_str::<Inventory>(prior).is_err());
     }
 

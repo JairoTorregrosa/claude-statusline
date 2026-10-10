@@ -37,18 +37,23 @@ fn main() {
     };
 
     let cfg = config::load();
+    let inventory = cfg
+        .inventory
+        .then(|| {
+            p.transcript_path.as_deref().and_then(|t| {
+                let scope = inventory::Scope {
+                    cwd: p.cwd().map(Into::into),
+                    home: cache::home_dir(),
+                };
+                inventory::collect(Path::new(t), &scope)
+            })
+        })
+        .flatten()
+        .filter(|inv| !inv.is_empty());
     let ext = render::External {
         git: p.cwd().and_then(|c| git::collect(Path::new(c))),
         compact_limit: settings::compact_limit(),
-        inventory: cfg
-            .inventory
-            .then(|| {
-                p.transcript_path
-                    .as_deref()
-                    .and_then(|t| inventory::collect(Path::new(t)))
-            })
-            .flatten()
-            .filter(|inv| !inv.is_empty()),
+        inventory,
         active_sessions: cfg.sessions.then(sessions::active_count).flatten(),
     };
     print!("{}", render::render(&p, &ext));

@@ -28,7 +28,7 @@ numbers below match the image.
 | 11 | Tokens | Shows the total tokens of this session: fresh input, cache writes, cache reads, and output. |
 | 12 | Last commit | Shows the subject of `HEAD`. |
 | 13 | MCP count | Shows the number of MCP servers loaded in this session. Each connected server adds tool definitions to the context on each turn. |
-| 14 | Skill count | Shows the number of skills loaded in this session. Each skill description also uses context. |
+| 14 | Skill count | Shows the number of skills loaded in this session, split into `local` (skills in the project's `.claude/skills`, and plugins the project's `.claude/settings*.json` enables) and `global` (everything else). Each skill description also uses context. After `/reload-skills` the split is unknown and only the total shows; after `/reload-plugins` the total is unknown too and the segment hides until the next session. |
 | 15 | Sessions | Shows the number of active Claude Code sessions on this machine. A session is active when its transcript received data in the last 60 seconds. |
 
 Line 4 shows deviations only. The counts come from the transcript of this
