@@ -30,10 +30,10 @@ value. This split keeps the render logic testable with plain values.
 
 | Source | Provides | Cost control |
 |---|---|---|
-| `git status --porcelain=v2 --branch` | branch, counts, last commit | one call each 4 s for each repository |
+| `git status --porcelain=v2 --branch` and `git log -1` | branch, counts, last commit subject | one call each per 4 s for each repository |
 | `~/.claude/settings.json` | auto-compact window | read on each render (small file) |
 | session transcript | MCP servers, skills, token totals | stored byte offset, 4 MB for each pass, 5 s TTL |
-| `~/.claude/projects` | active session count | directory walk, 10 s TTL |
+| `~/.claude/projects` | recently written top-level session transcripts | directory walk, 10 s TTL |
 
 Cache entries live under `~/.cache/claude-statusline/`. Each cache key
 includes the repository path or the transcript path, so sessions do not
@@ -43,8 +43,10 @@ contaminate each other.
 
 A missing or invalid input never produces an invented value.
 
-- Invalid `~/.claude/settings.json`: the context segment measures against
-  the model ceiling and shows a red `cfg!` marker.
+- Invalid `~/.claude/settings.json`: the context segment uses the model
+  ceiling when reported and shows a red `cfg!` marker. Without a ceiling,
+  it shows only the reported token count and `cfg!`.
+- Missing `context_window_size`: no denominator or percentage renders.
 - An inventory that cannot be complete: the segment does not render.
 - A state file with an unknown schema: the parse fails and the scan
   restarts from offset 0.
